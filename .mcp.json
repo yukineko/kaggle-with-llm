@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "kaggle-mcp": {
+      "command": "wsl",
+      "args": [
+        "-d", "Ubuntu-24.04",
+        "--",
+        "bash", "-lc",
+        "cd ~/src/kaggle-with-mcp/kaggle-mcp && uv run kaggle-mcp"
+      ]
+    }
+  }
+}

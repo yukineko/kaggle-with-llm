@@ -1,0 +1,586 @@
+"""
+House Prices: Advanced Regression Techniques
+Main pipeline: preprocessing → CV → model training → submission
+"""
+
+import warnings
+warnings.filterwarnings('ignore')
+
+import numpy as np
+import pandas as pd
+from sklearn.base import BaseEstimator, TransformerMixin
+from sklearn.pipeline import Pipeline
+from sklearn.model_selection import KFold, cross_val_score
+from sklearn.linear_model import Ridge, Lasso, ElasticNet
+from sklearn.kernel_ridge import KernelRidge
+from sklearn.ensemble import GradientBoostingRegressor, StackingRegressor
+from sklearn.preprocessing import RobustScaler
+from sklearn.metrics import mean_squared_error
+import lightgbm as lgb
+import xgboost as xgb
+from catboost import CatBoostRegressor
+
+
+# ============================================================
+# 前処理
+# ============================================================
+
+class HousePricesPreprocessor(BaseEstimator, TransformerMixin):
+    """fold内前処理: 統計量はtrain_foldのみから計算"""
+
+    # NA = "その設備がない" のカテゴリカル特徴量
+    NA_MEANS_NONE = [
+        'Alley', 'BsmtQual', 'BsmtCond', 'BsmtExposure', 'BsmtFinType1',
+        'BsmtFinType2', 'FireplaceQu', 'GarageType', 'GarageFinish',
+        'GarageQual', 'GarageCond', 'PoolQC', 'Fence', 'MiscFeature',
+        'MasVnrType',
+    ]
+
+    # 順序カテゴリのマッピング
+    ORDINAL_MAP = {
+        'ExterQual': {'Po': 1, 'Fa': 2, 'TA': 3, 'Gd': 4, 'Ex': 5},
+        'ExterCond': {'Po': 1, 'Fa': 2, 'TA': 3, 'Gd': 4, 'Ex': 5},
+        'BsmtQual': {'None': 0, 'Po': 1, 'Fa': 2, 'TA': 3, 'Gd': 4, 'Ex': 5},
+        'BsmtCond': {'None': 0, 'Po': 1, 'Fa': 2, 'TA': 3, 'Gd': 4, 'Ex': 5},
+        'BsmtExposure': {'None': 0, 'No': 1, 'Mn': 2, 'Av': 3, 'Gd': 4},
+        'BsmtFinType1': {'None': 0, 'Unf': 1, 'LwQ': 2, 'Rec': 3, 'BLQ': 4, 'ALQ': 5, 'GLQ': 6},
+        'BsmtFinType2': {'None': 0, 'Unf': 1, 'LwQ': 2, 'Rec': 3, 'BLQ': 4, 'ALQ': 5, 'GLQ': 6},
+        'HeatingQC': {'Po': 1, 'Fa': 2, 'TA': 3, 'Gd': 4, 'Ex': 5},
+        'KitchenQual': {'Po': 1, 'Fa': 2, 'TA': 3, 'Gd': 4, 'Ex': 5},
+        'Functional': {'Sal': 1, 'Sev': 2, 'Maj2': 3, 'Maj1': 4, 'Mod': 5, 'Min2': 6, 'Min1': 7, 'Typ': 8},
+        'FireplaceQu': {'None': 0, 'Po': 1, 'Fa': 2, 'TA': 3, 'Gd': 4, 'Ex': 5},
+        'GarageFinish': {'None': 0, 'Unf': 1, 'RFn': 2, 'Fin': 3},
+        'GarageQual': {'None': 0, 'Po': 1, 'Fa': 2, 'TA': 3, 'Gd': 4, 'Ex': 5},
+        'GarageCond': {'None': 0, 'Po': 1, 'Fa': 2, 'TA': 3, 'Gd': 4, 'Ex': 5},
+        'PavedDrive': {'N': 0, 'P': 1, 'Y': 2},
+        'PoolQC': {'None': 0, 'Fa': 1, 'TA': 2, 'Gd': 3, 'Ex': 4},
+        'Fence': {'None': 0, 'MnWw': 1, 'GdWo': 2, 'MnPrv': 3, 'GdPrv': 4},
+        'CentralAir': {'N': 0, 'Y': 1},
+        'Street': {'Grvl': 0, 'Pave': 1},
+        'LandSlope': {'Sev': 0, 'Mod': 1, 'Gtl': 2},
+        'LotShape': {'IR3': 0, 'IR2': 1, 'IR1': 2, 'Reg': 3},
+    }
+
+    # ドロップするカラム (ほぼ定数 or 情報量なし)
+    DROP_COLS = ['Id', 'Utilities', 'Street']
+
+    # 歪度補正対象 (log1p変換する連続量特徴量)
+    SKEW_FEATURES = [
+        'LotFrontage', 'LotArea', 'MasVnrArea', 'BsmtFinSF1', 'BsmtFinSF2',
+        'BsmtUnfSF', 'TotalBsmtSF', '1stFlrSF', '2ndFlrSF', 'LowQualFinSF',
+        'GrLivArea', 'GarageArea', 'WoodDeckSF', 'OpenPorchSF',
+        'EnclosedPorch', '3SsnPorch', 'ScreenPorch', 'PoolArea', 'MiscVal',
+    ]
+
+    # Target Encoding対象カラム
+    TE_COLS = ['Neighborhood']
+    TE_SMOOTH = 10  # smoothing parameter (小カテゴリの過学習防止)
+
+    def __init__(self):
+        self.lot_frontage_medians_ = None
+        self.num_medians_ = None
+        self.cat_modes_ = None
+        self.label_encoders_ = {}
+        self.feature_names_ = None
+        self.te_stats_ = {}
+        self.te_global_mean_ = None
+        self._train_y_ = None
+        self.first_floor_median_ = None
+
+    def fit(self, X, y=None):
+        df = X.copy()
+
+        # LotFrontage: Neighborhoodごとの中央値で補完
+        self.lot_frontage_medians_ = df.groupby('Neighborhood')['LotFrontage'].median()
+        self.lot_frontage_global_ = df['LotFrontage'].median()
+
+        # 数値の欠損は中央値で補完
+        num_cols = df.select_dtypes(include=[np.number]).columns
+        self.num_medians_ = df[num_cols].median()
+
+        # カテゴリカルの欠損は最頻値で補完
+        cat_cols = df.select_dtypes(include=['object']).columns
+        self.cat_modes_ = df[cat_cols].mode().iloc[0]
+
+        # Label Encoding用のマッピング
+        temp = self._fill_missing(df)
+        temp = self._ordinal_encode(temp)
+        remaining_cats = temp.select_dtypes(include=['object']).columns
+        for col in remaining_cats:
+            if col in self.DROP_COLS:
+                continue
+            vals = sorted(temp[col].unique())
+            self.label_encoders_[col] = {v: i for i, v in enumerate(vals)}
+
+        # Target Encoding統計量 (カテゴリ別のy合計・件数)
+        if y is not None:
+            self._fit_te(temp, y)
+
+        # Is_Senior_Friendly_Large用の閾値 (train foldから学習)
+        if '1stFlrSF' in df.columns:
+            self.first_floor_median_ = df['1stFlrSF'].median()
+
+        return self
+
+    def fit_transform(self, X, y=None, **fit_params):
+        """LOO Target Encoding のためにfit+transformをオーバーライド"""
+        self.fit(X, y)
+        self._train_y_ = y  # transform内でLOO計算に使用
+        result = self.transform(X)
+        self._train_y_ = None
+        return result
+
+    def transform(self, X):
+        df = X.copy()
+        df = self._fill_missing(df)
+        df = self._ordinal_encode(df)
+        df = self._apply_te(df)
+        df = self._label_encode(df)
+        df = self._feature_engineering(df)
+        df = self._drop_cols(df)
+        df = self._fix_skewness(df)
+
+        self.feature_names_ = df.columns.tolist()
+        return df.values.astype(np.float64)
+
+    def _fill_missing(self, df):
+        # NA = "なし" を "None" に置換
+        for col in self.NA_MEANS_NONE:
+            if col in df.columns:
+                df[col] = df[col].fillna('None')
+
+        # Garage数値系: ガレージなしは0
+        for col in ['GarageYrBlt', 'GarageCars', 'GarageArea']:
+            if col in df.columns:
+                df[col] = df[col].fillna(0)
+
+        # Basement数値系: 地下室なしは0
+        for col in ['BsmtFinSF1', 'BsmtFinSF2', 'BsmtUnfSF', 'TotalBsmtSF',
+                     'BsmtFullBath', 'BsmtHalfBath']:
+            if col in df.columns:
+                df[col] = df[col].fillna(0)
+
+        # LotFrontage: Neighborhoodごとの中央値
+        if 'LotFrontage' in df.columns:
+            for idx in df[df['LotFrontage'].isnull()].index:
+                neighborhood = df.loc[idx, 'Neighborhood']
+                if neighborhood in self.lot_frontage_medians_:
+                    df.loc[idx, 'LotFrontage'] = self.lot_frontage_medians_[neighborhood]
+                else:
+                    df.loc[idx, 'LotFrontage'] = self.lot_frontage_global_
+
+        # MasVnrArea
+        df['MasVnrArea'] = df['MasVnrArea'].fillna(0)
+
+        # 残りの数値は中央値
+        num_cols = df.select_dtypes(include=[np.number]).columns
+        for col in num_cols:
+            if df[col].isnull().any() and col in self.num_medians_:
+                df[col] = df[col].fillna(self.num_medians_[col])
+
+        # 残りのカテゴリカルは最頻値
+        cat_cols = df.select_dtypes(include=['object']).columns
+        for col in cat_cols:
+            if df[col].isnull().any() and col in self.cat_modes_:
+                df[col] = df[col].fillna(self.cat_modes_[col])
+
+        return df
+
+    def _ordinal_encode(self, df):
+        for col, mapping in self.ORDINAL_MAP.items():
+            if col in df.columns:
+                df[col] = df[col].map(mapping)
+                # マッピングに無い値は0で補完
+                df[col] = df[col].fillna(0).astype(int)
+        return df
+
+    def _label_encode(self, df):
+        for col, mapping in self.label_encoders_.items():
+            if col in df.columns:
+                df[col] = df[col].map(mapping)
+                df[col] = df[col].fillna(-1).astype(int)
+        return df
+
+    def _feature_engineering(self, df):
+        # 総面積
+        df['TotalSF'] = df['TotalBsmtSF'] + df['1stFlrSF'] + df['2ndFlrSF']
+        # 総ポーチ面積
+        df['TotalPorchSF'] = (df['OpenPorchSF'] + df['EnclosedPorch'] +
+                               df['3SsnPorch'] + df['ScreenPorch'])
+        # 総バスルーム数
+        df['TotalBath'] = (df['FullBath'] + 0.5 * df['HalfBath'] +
+                           df['BsmtFullBath'] + 0.5 * df['BsmtHalfBath'])
+        # 築年数
+        df['HouseAge'] = df['YrSold'] - df['YearBuilt']
+        # リモデルからの年数
+        df['RemodAge'] = df['YrSold'] - df['YearRemodAdd']
+        # リモデル有無
+        df['HasRemod'] = (df['YearRemodAdd'] != df['YearBuilt']).astype(int)
+        # ガレージ有無
+        df['HasGarage'] = (df['GarageArea'] > 0).astype(int)
+        # 地下室有無
+        df['HasBsmt'] = (df['TotalBsmtSF'] > 0).astype(int)
+        # 2階有無
+        df['Has2ndFlr'] = (df['2ndFlrSF'] > 0).astype(int)
+        # プール有無
+        df['HasPool'] = (df['PoolArea'] > 0).astype(int)
+        # ドメイン特徴量: 広さ軸
+        # 平屋かつ広い (Senior Friendly Large)
+        if self.first_floor_median_ is not None:
+            df['Is_SFL'] = ((df['2ndFlrSF'] == 0) &
+                            (df['1stFlrSF'] >= self.first_floor_median_)).astype(int)
+        # 建蔽率的指標 (建物面積 / 土地面積)
+        df['Living_Space_Ratio'] = df['GrLivArea'] / df['LotArea'].clip(lower=1)
+        # 広さ×品質の相乗効果
+        df['Luxury_Space_Index'] = df['TotalSF'] * df['OverallQual']
+
+        return df
+
+    def _drop_cols(self, df):
+        drop = [c for c in self.DROP_COLS if c in df.columns]
+        df = df.drop(columns=drop)
+        return df
+
+    def _fix_skewness(self, df):
+        for feat in self.SKEW_FEATURES:
+            if feat in df.columns:
+                df[feat] = np.log1p(np.maximum(df[feat], 0))
+        for feat in ['TotalSF', 'TotalPorchSF', 'Luxury_Space_Index']:
+            if feat in df.columns:
+                df[feat] = np.log1p(np.maximum(df[feat], 0))
+        return df
+
+    def _fit_te(self, df, y):
+        """Target Encoding統計量を訓練データから計算"""
+        self.te_global_mean_ = float(y.mean())
+        self.te_stats_ = {}
+        for col in self.TE_COLS:
+            if col in df.columns:
+                y_arr = y.values if hasattr(y, 'values') else np.array(y)
+                tmp = pd.DataFrame({'cat': df[col].values, 'y': y_arr})
+                agg = tmp.groupby('cat')['y'].agg(['sum', 'count'])
+                self.te_stats_[col] = {
+                    idx: {'sum': row['sum'], 'count': row['count']}
+                    for idx, row in agg.iterrows()
+                }
+
+    def _target_encode_train(self, df, y):
+        """LOO Target Encoding (訓練データ用: 自分自身のyを除外して平均計算)"""
+        smooth = self.TE_SMOOTH
+        global_mean = self.te_global_mean_
+        for col in self.TE_COLS:
+            if col not in df.columns or col not in self.te_stats_:
+                continue
+            y_arr = y.values if hasattr(y, 'values') else np.array(y)
+            tmp = pd.DataFrame({'cat': df[col].values, 'y': y_arr})
+            cat_sum = tmp.groupby('cat')['y'].transform('sum')
+            cat_count = tmp.groupby('cat')['y'].transform('count')
+            # LOO: 自分自身のyを除外
+            loo_sum = cat_sum - tmp['y']
+            loo_count = cat_count - 1
+            # Smoothing: 小カテゴリはglobal meanに引き寄せる
+            # .values で位置ベース代入 (fold分割後のdf.indexと不整合を防止)
+            df[f'{col}_te'] = ((loo_sum + smooth * global_mean)
+                               / (loo_count + smooth)).values
+        return df
+
+    def _target_encode_test(self, df):
+        """通常のTarget Encoding (テスト/バリデーションデータ用)"""
+        smooth = self.TE_SMOOTH
+        global_mean = self.te_global_mean_
+        for col in self.TE_COLS:
+            if col not in df.columns or col not in self.te_stats_:
+                continue
+            encoded = np.full(len(df), global_mean)
+            for cat, stats in self.te_stats_[col].items():
+                mask = (df[col] == cat)
+                n = stats['count']
+                s = stats['sum']
+                encoded[mask] = (s + smooth * global_mean) / (n + smooth)
+            df[f'{col}_te'] = encoded
+        return df
+
+    def _apply_te(self, df):
+        """Target Encodingを適用 (LOO for train, regular for test)"""
+        if self.te_global_mean_ is None:
+            return df
+        if self._train_y_ is not None:
+            return self._target_encode_train(df, self._train_y_)
+        return self._target_encode_test(df)
+
+
+
+class CatBoostPreprocessor(HousePricesPreprocessor):
+    """CatBoost用前処理: カテゴリカル変数を文字列のまま保持し cat_features で渡す"""
+
+    def __init__(self):
+        super().__init__()
+        self.cat_feature_indices_ = None
+        self.cat_feature_names_ = None
+
+    def transform(self, X):
+        df = X.copy()
+        df = self._fill_missing(df)
+        df = self._ordinal_encode(df)
+        df = self._apply_te(df)
+        # Label Encoding をスキップ — カテゴリカルは文字列のまま保持
+        df = self._feature_engineering(df)
+        df = self._drop_cols(df)
+        df = self._fix_skewness(df)
+
+        # 残存する文字列列 = CatBoost用 cat_features
+        cat_cols = df.select_dtypes(include=['object']).columns.tolist()
+        self.cat_feature_names_ = cat_cols
+        self.cat_feature_indices_ = [df.columns.get_loc(c) for c in cat_cols]
+        self.feature_names_ = df.columns.tolist()
+
+        # カテゴリカルの残存NaN対策
+        for col in cat_cols:
+            df[col] = df[col].fillna('Missing')
+
+        return df
+
+
+# ============================================================
+# データ読み込み
+# ============================================================
+
+def load_data():
+    train = pd.read_csv('data/train.csv')
+    test = pd.read_csv('data/test.csv')
+
+    # 外れ値除去 (GrLivArea > 4000 & 低価格)
+    outliers = train[(train['GrLivArea'] > 4000) & (train['SalePrice'] < 300000)].index
+    train = train.drop(outliers).reset_index(drop=True)
+    print(f'外れ値除去: {len(outliers)}件 → Train: {len(train)}行')
+
+    y = np.log1p(train['SalePrice'])
+    X = train.drop(columns=['SalePrice'])
+    X_test = test.copy()
+    test_ids = test['Id']
+
+    return X, y, X_test, test_ids
+
+
+# ============================================================
+# CV
+# ============================================================
+
+def get_models(seed=42):
+    """全モデル定義"""
+    return {
+        'Ridge': Ridge(alpha=10.0),
+        'Lasso': Lasso(alpha=0.0005, max_iter=10000),
+        'ElasticNet': ElasticNet(alpha=0.0005, l1_ratio=0.5, max_iter=10000),
+        'GBR': GradientBoostingRegressor(
+            n_estimators=3000, learning_rate=0.05, max_depth=4,
+            min_samples_split=10, min_samples_leaf=5, max_features='sqrt',
+            loss='huber', subsample=0.8, random_state=seed),
+        'XGBoost': xgb.XGBRegressor(
+            n_estimators=2000, learning_rate=0.05, max_depth=4,
+            subsample=0.8, colsample_bytree=0.8, reg_alpha=0.1,
+            reg_lambda=1.0, random_state=seed, verbosity=0),
+        'LightGBM': lgb.LGBMRegressor(
+            n_estimators=2000, learning_rate=0.05, max_depth=5,
+            num_leaves=31, subsample=0.8, colsample_bytree=0.8,
+            reg_alpha=0.1, reg_lambda=1.0, random_state=seed, verbose=-1),
+        'CatBoost': CatBoostRegressor(
+            iterations=3000, learning_rate=0.05, depth=6,
+            loss_function='RMSE', random_seed=seed, verbose=0),
+    }
+
+
+def make_pipeline(model):
+    """前処理 + モデルのパイプライン"""
+    return Pipeline([
+        ('preprocess', HousePricesPreprocessor()),
+        ('model', model),
+    ])
+
+
+def evaluate_models(X, y, n_splits=5, seed=42):
+    """KFold CVで複数モデルを評価 (RMSLE = RMSE on log1p target)"""
+    kf = KFold(n_splits=n_splits, shuffle=True, random_state=seed)
+    models = get_models(seed)
+
+    results = {}
+    for name, model in models.items():
+        if name == 'CatBoost':
+            # CatBoost: CatBoostPreprocessor + manual CV (cat_features指定)
+            rmse_scores = np.zeros(n_splits)
+            for fold, (train_idx, val_idx) in enumerate(kf.split(X)):
+                cb_prep = CatBoostPreprocessor()
+                X_tr = cb_prep.fit_transform(X.iloc[train_idx], y.iloc[train_idx])
+                X_va = cb_prep.transform(X.iloc[val_idx])
+                cat_idx = cb_prep.cat_feature_indices_
+
+                cb = CatBoostRegressor(
+                    iterations=3000, learning_rate=0.05, depth=6,
+                    loss_function='RMSE', random_seed=seed, verbose=0)
+                cb.fit(X_tr, y.iloc[train_idx],
+                       eval_set=(X_va, y.iloc[val_idx]),
+                       cat_features=cat_idx,
+                       early_stopping_rounds=100)
+                preds = cb.predict(X_va)
+                rmse_scores[fold] = np.sqrt(mean_squared_error(
+                    y.iloc[val_idx], preds))
+
+            results[name] = {
+                'mean': rmse_scores.mean(),
+                'std': rmse_scores.std(),
+                'scores': rmse_scores,
+            }
+        else:
+            pipe = make_pipeline(model)
+            scores = cross_val_score(pipe, X, y, cv=kf,
+                                     scoring='neg_mean_squared_error')
+            rmse_scores = np.sqrt(-scores)
+            results[name] = {
+                'mean': rmse_scores.mean(),
+                'std': rmse_scores.std(),
+                'scores': rmse_scores,
+            }
+        print(f'{name:12s}: RMSLE = {rmse_scores.mean():.5f} ± {rmse_scores.std():.5f}')
+
+    return results
+
+
+# ============================================================
+# 予測 & 提出
+# ============================================================
+
+def train_and_predict(X, y, X_test, test_ids, model_name='GBR', seed=42):
+    """フル学習 → テスト予測 → submission.csv"""
+    models = get_models(seed)
+    model = models[model_name]
+    pipe = make_pipeline(model)
+
+    pipe.fit(X, y)
+    preds_log = pipe.predict(X_test)
+    preds = np.expm1(preds_log)
+    preds = np.maximum(preds, 0)
+
+    submission = pd.DataFrame({'Id': test_ids, 'SalePrice': preds})
+    filename = f'submission_{model_name.lower()}.csv'
+    submission.to_csv(filename, index=False)
+    print(f'\n{filename} を作成しました ({len(submission)}行)')
+    print(f'SalePrice: mean={preds.mean():.0f}, median={np.median(preds):.0f}')
+
+    return submission
+
+
+# ============================================================
+# スタッキング & ブレンディング
+# ============================================================
+
+def stacking_predict(X, y, X_test, test_ids, seed=42):
+    """OOFスタッキング: 複数モデル → Ridgeメタモデル"""
+    kf = KFold(n_splits=5, shuffle=True, random_state=seed)
+    base_models = get_models(seed)
+
+    n_train = len(X)
+    n_test = len(X_test)
+    n_models = len(base_models)
+
+    oof_preds = np.zeros((n_train, n_models))
+    test_preds = np.zeros((n_test, n_models))
+
+    for i, (name, model) in enumerate(base_models.items()):
+        print(f'  {name}...', end='', flush=True)
+        test_preds_fold = np.zeros((n_test, 5))
+
+        for fold, (train_idx, val_idx) in enumerate(kf.split(X)):
+            X_train_fold = X.iloc[train_idx]
+            y_train_fold = y.iloc[train_idx]
+            X_val_fold = X.iloc[val_idx]
+
+            if name == 'CatBoost':
+                cb_prep = CatBoostPreprocessor()
+                X_tr = cb_prep.fit_transform(X_train_fold, y_train_fold)
+                X_va = cb_prep.transform(X_val_fold)
+                X_te = cb_prep.transform(X_test)
+                cat_idx = cb_prep.cat_feature_indices_
+
+                cb = CatBoostRegressor(
+                    iterations=3000, learning_rate=0.05, depth=6,
+                    loss_function='RMSE', random_seed=seed, verbose=0)
+                cb.fit(X_tr, y_train_fold,
+                       eval_set=(X_va, y.iloc[val_idx]),
+                       cat_features=cat_idx,
+                       early_stopping_rounds=100)
+                oof_preds[val_idx, i] = cb.predict(X_va)
+                test_preds_fold[:, fold] = cb.predict(X_te)
+            else:
+                pipe = make_pipeline(model)
+                pipe.fit(X_train_fold, y_train_fold)
+                oof_preds[val_idx, i] = pipe.predict(X_val_fold)
+                test_preds_fold[:, fold] = pipe.predict(X_test)
+
+        test_preds[:, i] = test_preds_fold.mean(axis=1)
+        rmse = np.sqrt(mean_squared_error(y, oof_preds[:, i]))
+        print(f' OOF RMSLE={rmse:.5f}')
+
+    # メタモデル
+    meta = Ridge(alpha=1.0)
+    meta.fit(oof_preds, y)
+    meta_pred = meta.predict(test_preds)
+
+    # OOF CVスコア
+    meta_cv = np.sqrt(-cross_val_score(
+        Ridge(alpha=1.0), oof_preds, y,
+        cv=KFold(5, shuffle=True, random_state=seed),
+        scoring='neg_mean_squared_error'))
+    print(f'\nStack CV RMSLE = {meta_cv.mean():.5f} ± {meta_cv.std():.5f}')
+    print(f'Meta weights: {dict(zip(base_models.keys(), meta.coef_.round(3)))}')
+
+    preds = np.expm1(meta_pred)
+    preds = np.maximum(preds, 0)
+
+    submission = pd.DataFrame({'Id': test_ids, 'SalePrice': preds})
+    submission.to_csv('submission_stack.csv', index=False)
+    print(f'\nsubmission_stack.csv を作成しました ({len(submission)}行)')
+    print(f'SalePrice: mean={preds.mean():.0f}, median={np.median(preds):.0f}')
+
+    return submission, meta_cv.mean()
+
+
+# ============================================================
+# メイン
+# ============================================================
+
+if __name__ == '__main__':
+    X, y, X_test, test_ids = load_data()
+
+    print('=' * 60)
+    print('モデル比較 (5-fold CV, RMSLE)')
+    print('=' * 60)
+    results = evaluate_models(X, y)
+
+    # ベストモデルで予測
+    best_model = min(results, key=lambda k: results[k]['mean'])
+    print(f'\nベストモデル: {best_model} (RMSLE={results[best_model]["mean"]:.5f})')
+
+    # 単体ベストの提出
+    train_and_predict(X, y, X_test, test_ids, model_name=best_model)
+
+    # スタッキング
+    print('\n' + '=' * 60)
+    print('スタッキング')
+    print('=' * 60)
+    stacking_predict(X, y, X_test, test_ids)
+
+    # マルチシードスタッキング (seed averaging)
+    print('\n' + '=' * 60)
+    print('マルチシード スタッキング (seeds: 42, 123, 456)')
+    print('=' * 60)
+    multi_preds = []
+    for seed in [42, 123, 456]:
+        print(f'\n--- seed={seed} ---')
+        sub, cv = stacking_predict(X, y, X_test, test_ids, seed=seed)
+        multi_preds.append(sub['SalePrice'].values)
+
+    avg_preds = np.mean(multi_preds, axis=0)
+    submission_multi = pd.DataFrame({'Id': test_ids, 'SalePrice': avg_preds})
+    submission_multi.to_csv('submission_multiseed.csv', index=False)
+    print(f'\nsubmission_multiseed.csv を作成しました')
+    print(f'SalePrice: mean={avg_preds.mean():.0f}, median={np.median(avg_preds):.0f}')

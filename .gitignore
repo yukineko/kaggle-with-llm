@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+catboost_info/
+eda_executed.ipynb
+output.png
+.claude/settings.local.json
+kaggle-mcp/

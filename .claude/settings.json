@@ -1,0 +1,29 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pip install --break-system-packages matplotlib seaborn ipykernel)",
+      "Bash(pip install --break-system-packages jinja2)",
+      "Bash(pip install --break-system-packages --force-reinstall jinja2)",
+      "Bash(pip install --break-system-packages scikit-learn)",
+      "Bash(pip install --break-system-packages lightgbm)",
+      "WebFetch(domain:medium.com)",
+      "WebFetch(domain:www.ahmedbesbes.com)",
+      "WebFetch(domain:amypeniston.com)",
+      "WebFetch(domain:tdody.github.io)",
+      "WebFetch(domain:david-recio.com)",
+      "Bash(pip install --break-system-packages xgboost)",
+      "Bash(kaggle competitions submit -c titanic -f /mnt/c/Users/hiroyuki_nakayama/src/kaggle-with-mcp/titanic/submission.csv -m \"SVM 12 features, GroupKFold, C=1.0 gamma=scale\")",
+      "Bash(kaggle competitions submit -c titanic -f /mnt/c/Users/hiroyuki_nakayama/src/kaggle-with-mcp/titanic/submission.csv -m \"SVM 12 features, leak-fixed \\(train-only stats\\), GroupKFold with Union-Find\")",
+      "Bash(kaggle competitions submissions -c titanic)",
+      "Bash(kaggle competitions submit -c titanic -f submission.csv -m \"SVM C=0.5 gamma=0.05 kernel=rbf, 12 features, leak-fixed, GroupKFold\")",
+      "Bash(jupyter nbconvert --to notebook --execute eda.ipynb --output eda_executed.ipynb)",
+      "Bash(pip install nbconvert)",
+      "Bash(pip install nbconvert --break-system-packages)",
+      "Bash(python main.py)",
+      "Bash(kaggle competitions submit -c house-prices-advanced-regression-techniques -f submission_gbr.csv -m \"Baseline: GBR with feature engineering, CV=0.11478\")"
+    ],
+    "additionalDirectories": [
+      "/mnt/c/Users/hiroyuki_nakayama/src/kaggle-with-mcp/titanic"
+    ]
+  }
+}
