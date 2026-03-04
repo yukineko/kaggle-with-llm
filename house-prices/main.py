@@ -86,6 +86,8 @@ class HousePricesPreprocessor(BaseEstimator, TransformerMixin):
         self.te_global_mean_ = None
         self._train_y_ = None
         self.first_floor_median_ = None
+        self.comfort_mean_ = None
+        self.comfort_std_ = None
 
     def fit(self, X, y=None):
         df = X.copy()
@@ -120,6 +122,19 @@ class HousePricesPreprocessor(BaseEstimator, TransformerMixin):
         if '1stFlrSF' in df.columns:
             self.first_floor_median_ = df['1stFlrSF'].median()
 
+        # Pure_Comfort_Score用: Z-score標準化パラメータ (train foldから学習)
+        # temp は既に _fill_missing + _ordinal_encode 済み
+        raw_comfort = (
+            (temp['HeatingQC'] == 5).astype(int) +
+            (temp['KitchenQual'] >= 4).astype(int) +
+            (temp['GarageFinish'] >= 2).astype(int) +
+            (temp['FireplaceQu'] >= 4).astype(int)
+        )
+        self.comfort_mean_ = float(raw_comfort.mean())
+        self.comfort_std_ = float(raw_comfort.std())
+        if self.comfort_std_ < 1e-8:
+            self.comfort_std_ = 1.0
+
         return self
 
     def fit_transform(self, X, y=None, **fit_params):
@@ -135,6 +150,9 @@ class HousePricesPreprocessor(BaseEstimator, TransformerMixin):
         df = self._fill_missing(df)
         df = self._ordinal_encode(df)
         df = self._apply_te(df)
+        df = self._qol_features(df)
+        df = self._value_standard_features(df)
+        df = self._pure_comfort_features(df)
         df = self._label_encode(df)
         df = self._feature_engineering(df)
         df = self._drop_cols(df)
@@ -202,6 +220,9 @@ class HousePricesPreprocessor(BaseEstimator, TransformerMixin):
         return df
 
     def _feature_engineering(self, df):
+        # 住める広さ: 地上階 + 地下室仕上がり加重面積
+        df['Livable_Area'] = (df['1stFlrSF'] + df['2ndFlrSF']
+                              + df['TotalBsmtSF'] * df['BsmtFinType1'])
         # 総面積
         df['TotalSF'] = df['TotalBsmtSF'] + df['1stFlrSF'] + df['2ndFlrSF']
         # 総ポーチ面積
@@ -245,7 +266,7 @@ class HousePricesPreprocessor(BaseEstimator, TransformerMixin):
         for feat in self.SKEW_FEATURES:
             if feat in df.columns:
                 df[feat] = np.log1p(np.maximum(df[feat], 0))
-        for feat in ['TotalSF', 'TotalPorchSF', 'Luxury_Space_Index']:
+        for feat in ['TotalSF', 'TotalPorchSF', 'Luxury_Space_Index', 'Livable_Area']:
             if feat in df.columns:
                 df[feat] = np.log1p(np.maximum(df[feat], 0))
         return df
@@ -308,6 +329,66 @@ class HousePricesPreprocessor(BaseEstimator, TransformerMixin):
             return self._target_encode_train(df, self._train_y_)
         return self._target_encode_test(df)
 
+    def _qol_features(self, df):
+        """QOL Score: 9つのバイナリアメニティ指標の合計 (0-9)"""
+        df['QOL_Score'] = (
+            (df['CentralAir'] == 1).astype(int) +
+            (df['GarageArea'] > 0).astype(int) +
+            (df['TotalBsmtSF'] > 0).astype(int) +
+            (df['Fireplaces'] > 0).astype(int) +
+            (df['Functional'] == 8).astype(int) +
+            (df['KitchenQual'] >= 4).astype(int) +
+            (df['ExterQual'] >= 4).astype(int) +
+            (df['BsmtQual'] >= 4).astype(int) +
+            (df['FullBath'] >= 2).astype(int)
+        )
+        return df
+
+    def _family_stability_features(self, df):
+        """Family Stability Index: 家族定着の土台 (0-3)
+        FullBath>=2 (家族利用), BedroomAbvGr>=3 (子供部屋確保),
+        KitchenQual>=TA (即入居可キッチン)
+        交互作用: 全条件充足(FSI==3)フラグ × GrLivArea (二値×連続で独立性確保)
+        """
+        fsi = (
+            (df['FullBath'] >= 2).astype(int) +
+            (df['BedroomAbvGr'] >= 3).astype(int) +
+            (df['KitchenQual'] >= 3).astype(int)
+        )
+        df['Family_Stability_Index'] = fsi
+        df['Family_Premium'] = (fsi == 3).astype(int) * df['GrLivArea']
+        return df
+
+    def _value_standard_features(self, df):
+        """Value Standard Score: 生活基盤の充実度 + GrLivArea交互作用"""
+        NOISE_CONDITIONS = {'Artery', 'Feedr', 'RRNn', 'RRNe', 'RRAn', 'RRAe'}
+        score = (
+            (df['HeatingQC'] >= 4).astype(int) +
+            (df['FullBath'] >= 2).astype(int) +
+            (df['GarageCars'] >= 2).astype(int) +
+            (df['CentralAir'] == 1).astype(int) -
+            df['Condition1'].isin(NOISE_CONDITIONS).astype(int) -
+            (df['Functional'] != 8).astype(int)
+        )
+        df['Value_Standard_Score'] = score
+        df['VSS_x_GrLivArea'] = score * df['GrLivArea']
+        return df
+
+    def _pure_comfort_features(self, df):
+        """Pure Comfort Score: 面積非依存の設備品質指標 (Z-score標準化)
+        4成分: HeatingQC==Ex, KitchenQual>=Gd, GarageFinish∈{Fin,RFn}, FireplaceQu>=Gd
+        raw: 0-4 → Z-score (train fold mean/stdで標準化)
+        """
+        raw = (
+            (df['HeatingQC'] == 5).astype(int) +
+            (df['KitchenQual'] >= 4).astype(int) +
+            (df['GarageFinish'] >= 2).astype(int) +
+            (df['FireplaceQu'] >= 4).astype(int)
+        )
+        mean = self.comfort_mean_ if self.comfort_mean_ is not None else 0.0
+        std = self.comfort_std_ if self.comfort_std_ is not None else 1.0
+        df['Pure_Comfort_Score'] = (raw - mean) / std
+        return df
 
 
 class CatBoostPreprocessor(HousePricesPreprocessor):
@@ -323,6 +404,9 @@ class CatBoostPreprocessor(HousePricesPreprocessor):
         df = self._fill_missing(df)
         df = self._ordinal_encode(df)
         df = self._apply_te(df)
+        df = self._qol_features(df)
+        df = self._value_standard_features(df)
+        df = self._pure_comfort_features(df)
         # Label Encoding をスキップ — カテゴリカルは文字列のまま保持
         df = self._feature_engineering(df)
         df = self._drop_cols(df)
@@ -339,6 +423,24 @@ class CatBoostPreprocessor(HousePricesPreprocessor):
             df[col] = df[col].fillna('Missing')
 
         return df
+
+
+class CatBoostPipeline:
+    """CatBoost用パイプライン: cat_features を自動的に渡す"""
+
+    def __init__(self, model):
+        self.preprocess = CatBoostPreprocessor()
+        self.model = model
+
+    def fit(self, X, y):
+        X_t = self.preprocess.fit_transform(X, y)
+        cat_idx = self.preprocess.cat_feature_indices_
+        self.model.fit(X_t, y, cat_features=cat_idx)
+        return self
+
+    def predict(self, X):
+        X_t = self.preprocess.transform(X)
+        return self.model.predict(X_t)
 
 
 # ============================================================
@@ -385,13 +487,15 @@ def get_models(seed=42):
             num_leaves=31, subsample=0.8, colsample_bytree=0.8,
             reg_alpha=0.1, reg_lambda=1.0, random_state=seed, verbose=-1),
         'CatBoost': CatBoostRegressor(
-            iterations=3000, learning_rate=0.05, depth=6,
-            loss_function='RMSE', random_seed=seed, verbose=0),
+            iterations=1000, learning_rate=0.05, depth=6,
+            l2_leaf_reg=3.0, random_seed=seed, verbose=0),
     }
 
 
-def make_pipeline(model):
+def make_pipeline(model, use_catboost=False):
     """前処理 + モデルのパイプライン"""
+    if use_catboost:
+        return CatBoostPipeline(model)
     return Pipeline([
         ('preprocess', HousePricesPreprocessor()),
         ('model', model),
@@ -405,41 +509,26 @@ def evaluate_models(X, y, n_splits=5, seed=42):
 
     results = {}
     for name, model in models.items():
-        if name == 'CatBoost':
-            # CatBoost: CatBoostPreprocessor + manual CV (cat_features指定)
-            rmse_scores = np.zeros(n_splits)
-            for fold, (train_idx, val_idx) in enumerate(kf.split(X)):
-                cb_prep = CatBoostPreprocessor()
-                X_tr = cb_prep.fit_transform(X.iloc[train_idx], y.iloc[train_idx])
-                X_va = cb_prep.transform(X.iloc[val_idx])
-                cat_idx = cb_prep.cat_feature_indices_
-
-                cb = CatBoostRegressor(
-                    iterations=3000, learning_rate=0.05, depth=6,
-                    loss_function='RMSE', random_seed=seed, verbose=0)
-                cb.fit(X_tr, y.iloc[train_idx],
-                       eval_set=(X_va, y.iloc[val_idx]),
-                       cat_features=cat_idx,
-                       early_stopping_rounds=100)
-                preds = cb.predict(X_va)
-                rmse_scores[fold] = np.sqrt(mean_squared_error(
-                    y.iloc[val_idx], preds))
-
-            results[name] = {
-                'mean': rmse_scores.mean(),
-                'std': rmse_scores.std(),
-                'scores': rmse_scores,
-            }
+        is_cb = name == 'CatBoost'
+        if is_cb:
+            # CatBoostは手動CV (cat_features 渡し)
+            rmse_list = []
+            for train_idx, val_idx in kf.split(X):
+                pipe_cb = make_pipeline(model, use_catboost=True)
+                pipe_cb.fit(X.iloc[train_idx], y.iloc[train_idx])
+                pred = pipe_cb.predict(X.iloc[val_idx])
+                rmse_list.append(np.sqrt(mean_squared_error(y.iloc[val_idx], pred)))
+            rmse_scores = np.array(rmse_list)
         else:
             pipe = make_pipeline(model)
             scores = cross_val_score(pipe, X, y, cv=kf,
                                      scoring='neg_mean_squared_error')
             rmse_scores = np.sqrt(-scores)
-            results[name] = {
-                'mean': rmse_scores.mean(),
-                'std': rmse_scores.std(),
-                'scores': rmse_scores,
-            }
+        results[name] = {
+            'mean': rmse_scores.mean(),
+            'std': rmse_scores.std(),
+            'scores': rmse_scores,
+        }
         print(f'{name:12s}: RMSLE = {rmse_scores.mean():.5f} ± {rmse_scores.std():.5f}')
 
     return results
@@ -488,33 +577,17 @@ def stacking_predict(X, y, X_test, test_ids, seed=42):
     for i, (name, model) in enumerate(base_models.items()):
         print(f'  {name}...', end='', flush=True)
         test_preds_fold = np.zeros((n_test, 5))
+        is_cb = name == 'CatBoost'
 
         for fold, (train_idx, val_idx) in enumerate(kf.split(X)):
             X_train_fold = X.iloc[train_idx]
             y_train_fold = y.iloc[train_idx]
             X_val_fold = X.iloc[val_idx]
 
-            if name == 'CatBoost':
-                cb_prep = CatBoostPreprocessor()
-                X_tr = cb_prep.fit_transform(X_train_fold, y_train_fold)
-                X_va = cb_prep.transform(X_val_fold)
-                X_te = cb_prep.transform(X_test)
-                cat_idx = cb_prep.cat_feature_indices_
-
-                cb = CatBoostRegressor(
-                    iterations=3000, learning_rate=0.05, depth=6,
-                    loss_function='RMSE', random_seed=seed, verbose=0)
-                cb.fit(X_tr, y_train_fold,
-                       eval_set=(X_va, y.iloc[val_idx]),
-                       cat_features=cat_idx,
-                       early_stopping_rounds=100)
-                oof_preds[val_idx, i] = cb.predict(X_va)
-                test_preds_fold[:, fold] = cb.predict(X_te)
-            else:
-                pipe = make_pipeline(model)
-                pipe.fit(X_train_fold, y_train_fold)
-                oof_preds[val_idx, i] = pipe.predict(X_val_fold)
-                test_preds_fold[:, fold] = pipe.predict(X_test)
+            pipe = make_pipeline(model, use_catboost=is_cb)
+            pipe.fit(X_train_fold, y_train_fold)
+            oof_preds[val_idx, i] = pipe.predict(X_val_fold)
+            test_preds_fold[:, fold] = pipe.predict(X_test)
 
         test_preds[:, i] = test_preds_fold.mean(axis=1)
         rmse = np.sqrt(mean_squared_error(y, oof_preds[:, i]))

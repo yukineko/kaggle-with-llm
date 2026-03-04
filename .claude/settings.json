@@ -20,7 +20,12 @@
       "Bash(pip install nbconvert)",
       "Bash(pip install nbconvert --break-system-packages)",
       "Bash(python main.py)",
-      "Bash(kaggle competitions submit -c house-prices-advanced-regression-techniques -f submission_gbr.csv -m \"Baseline: GBR with feature engineering, CV=0.11478\")"
+      "Bash(kaggle competitions submit -c house-prices-advanced-regression-techniques -f submission_gbr.csv -m \"Baseline: GBR with feature engineering, CV=0.11478\")",
+      "Bash(git commit:*)",
+      "Bash(python -c \":*)",
+      "Bash(# Maybe uv was used to run it with 3.12? Check if uv can provide python 3.12 uv python list)",
+      "Bash(\"c:/Users/hiroyuki_nakayama/AppData/Local/Programs/Python/Python313/python.exe\" -m pip install numpy pandas scikit-learn xgboost lightgbm catboost)",
+      "Bash(\"c:/Users/hiroyuki_nakayama/AppData/Local/Programs/Python/Python313/python.exe\" -c \":*)"
     ],
     "additionalDirectories": [
       "/mnt/c/Users/hiroyuki_nakayama/src/kaggle-with-mcp/titanic"
