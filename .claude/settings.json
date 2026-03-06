@@ -25,7 +25,15 @@
       "Bash(python -c \":*)",
       "Bash(# Maybe uv was used to run it with 3.12? Check if uv can provide python 3.12 uv python list)",
       "Bash(\"c:/Users/hiroyuki_nakayama/AppData/Local/Programs/Python/Python313/python.exe\" -m pip install numpy pandas scikit-learn xgboost lightgbm catboost)",
-      "Bash(\"c:/Users/hiroyuki_nakayama/AppData/Local/Programs/Python/Python313/python.exe\" -c \":*)"
+      "Bash(\"c:/Users/hiroyuki_nakayama/AppData/Local/Programs/Python/Python313/python.exe\" -c \":*)",
+      "Bash(KAGGLE_TOKEN=\"KGAT_02f1d8d7d0bbbce4696e3f3261d50e71\")",
+      "Bash(FILE_PATH=\"c:/Users/hiroyuki_nakayama/src/kaggle-with-mcp/house-prices/submissions/submission_stack.csv\")",
+      "Bash(UPLOAD_URL='https://www.googleapis.com/upload/storage/v1/b/kaggle-competitions-submissions/o?uploadType=resumable&upload_id=AGQBYWz2yTf1SjoiT1KmA_LbmTSp2Io0jfLJgSxhKLQuvJVNgjW97_bCn13VVryDFXWXRDdAOcS8G07yoCfVJrqAalxSnq9R0QrCZddiZVlvtg')",
+      "Bash(COMPETITION=\"house-prices-advanced-regression-techniques\")",
+      "Bash(TOKEN='CfDJ8MXf3ve5BXlLqj3to84NtJquXqVicRKPuS7Strm9ZVbH1PS-VY6hLwA4-SoyzVybI_cuwX4nFlrWDlPVFc4OaSUEw8LzxvDUb-3U-3ReLyu0e17_ZiTHm5TYNXAy69A4a4bojjtfEhY0rhraoVNaXCn3Qr4MAExXKzejgmKir44lg0cuTYS4jyFNY0AS0o6zoJVg68ee93vcPspy77pYEtU7Hmn9Dlw')",
+      "Bash(python3 -m json.tool)",
+      "Bash(ls -la c:/Users/hiroyuki_nakayama/src/kaggle-with-mcp/house-prices/submission_*.csv)",
+      "Bash(ls -la c:/Users/hiroyuki_nakayama/Downloads/submission_*.csv)"
     ],
     "additionalDirectories": [
       "/mnt/c/Users/hiroyuki_nakayama/src/kaggle-with-mcp/titanic"

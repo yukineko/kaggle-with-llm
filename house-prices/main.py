@@ -25,6 +25,28 @@ from catboost import CatBoostRegressor
 # 前処理
 # ============================================================
 
+# Neighborhood価格帯ビン (LOO TEの値をビンに分け、線形モデルにカテゴリ序列を与える)
+NBHD_BIN_N = 5  # 5分位
+
+# 線形専用の合成特徴量 (tree系には除外する)
+# 合成特徴量に集約済みのため削除する元変数
+REDUNDANT_COLS = [
+    'TotalBsmtSF', '1stFlrSF', '2ndFlrSF',           # → TotalSF
+    'FullBath', 'HalfBath', 'BsmtFullBath', 'BsmtHalfBath',  # → TotalBath
+    'YearBuilt',                                       # → HouseAge
+]
+
+LINEAR_ONLY_FEATURES = [
+    'Value_Standard_Score', 'VSS_x_GrLivArea',
+    'Pure_Comfort_Score', 'Livable_Area',
+    'Thermal_Efficiency',
+    'IDOTRR_Distress', 'IDOTRR_QualCap',
+    'Elite_Area_Premium',
+    'Is_Distress_Sale', 'Distress_x_Qual',
+    'Snow_Maint_Burden', 'Burden_x_Area',
+]
+
+
 class HousePricesPreprocessor(BaseEstimator, TransformerMixin):
     """fold内前処理: 統計量はtrain_foldのみから計算"""
 
@@ -76,7 +98,8 @@ class HousePricesPreprocessor(BaseEstimator, TransformerMixin):
     TE_COLS = ['Neighborhood']
     TE_SMOOTH = 10  # smoothing parameter (小カテゴリの過学習防止)
 
-    def __init__(self):
+    def __init__(self, feature_set=None):
+        self.feature_set = feature_set  # None=全変数, 'A'=精鋭24, 'B'=木モデル30
         self.lot_frontage_medians_ = None
         self.num_medians_ = None
         self.cat_modes_ = None
@@ -88,6 +111,7 @@ class HousePricesPreprocessor(BaseEstimator, TransformerMixin):
         self.first_floor_median_ = None
         self.comfort_mean_ = None
         self.comfort_std_ = None
+        self.nbhd_bin_edges_ = None
 
     def fit(self, X, y=None):
         df = X.copy()
@@ -135,6 +159,15 @@ class HousePricesPreprocessor(BaseEstimator, TransformerMixin):
         if self.comfort_std_ < 1e-8:
             self.comfort_std_ = 1.0
 
+        # Neighborhood Binning: TE値を5分位ビンに分割 (線形モデル補助)
+        if self.te_stats_ and 'Neighborhood' in self.te_stats_:
+            te_vals = []
+            for cat, stats in self.te_stats_['Neighborhood'].items():
+                te_vals.append(stats['sum'] / max(stats['count'], 1))
+            te_arr = np.array(te_vals)
+            self.nbhd_bin_edges_ = np.percentile(
+                te_arr, np.linspace(0, 100, NBHD_BIN_N + 1)[1:-1])
+
         return self
 
     def fit_transform(self, X, y=None, **fit_params):
@@ -150,16 +183,31 @@ class HousePricesPreprocessor(BaseEstimator, TransformerMixin):
         df = self._fill_missing(df)
         df = self._ordinal_encode(df)
         df = self._apply_te(df)
+        df = self._nbhd_binning(df)
         df = self._qol_features(df)
         df = self._value_standard_features(df)
         df = self._pure_comfort_features(df)
+        df = self._thermal_efficiency(df)
+        df = self._location_bias_features(df)
         df = self._label_encode(df)
         df = self._feature_engineering(df)
+        df = self._drop_redundant(df)
         df = self._drop_cols(df)
         df = self._fix_skewness(df)
+        df = self._select_elite(df)
 
         self.feature_names_ = df.columns.tolist()
         return df.values.astype(np.float64)
+
+    def _select_elite(self, df):
+        """feature_setに応じて変数を調整"""
+        if self.feature_set == 'TREE':
+            # 木モデル: 線形専用合成変数を除外
+            drop = [f for f in LINEAR_ONLY_FEATURES if f in df.columns]
+            if drop:
+                df = df.drop(columns=drop)
+        # 'LINEAR' or None: 全変数をそのまま使用
+        return df
 
     def _fill_missing(self, df):
         # NA = "なし" を "None" に置換
@@ -257,6 +305,11 @@ class HousePricesPreprocessor(BaseEstimator, TransformerMixin):
 
         return df
 
+    def _drop_redundant(self, df):
+        """合成特徴量の元変数を削除 (TotalSF, TotalBath, HouseAge に集約済み)"""
+        drop = [c for c in REDUNDANT_COLS if c in df.columns]
+        return df.drop(columns=drop)
+
     def _drop_cols(self, df):
         drop = [c for c in self.DROP_COLS if c in df.columns]
         df = df.drop(columns=drop)
@@ -329,6 +382,12 @@ class HousePricesPreprocessor(BaseEstimator, TransformerMixin):
             return self._target_encode_train(df, self._train_y_)
         return self._target_encode_test(df)
 
+    def _nbhd_binning(self, df):
+        """Neighborhood TEを5分位ビンに変換 (線形モデル補助: 連続値→序列)"""
+        if self.nbhd_bin_edges_ is not None and 'Neighborhood_te' in df.columns:
+            df['Nbhd_Bin'] = np.digitize(df['Neighborhood_te'], self.nbhd_bin_edges_)
+        return df
+
     def _qol_features(self, df):
         """QOL Score: 9つのバイナリアメニティ指標の合計 (0-9)"""
         df['QOL_Score'] = (
@@ -390,12 +449,58 @@ class HousePricesPreprocessor(BaseEstimator, TransformerMixin):
         df['Pure_Comfort_Score'] = (raw - mean) / std
         return df
 
+    def _thermal_efficiency(self, df):
+        """Thermal Efficiency: 暖房・外装品質 / 面積 (線形モデル専用)
+        (HeatingQC + ExterQual) / log(GrLivArea) — 広さあたりの断熱性能"""
+        heat = df['HeatingQC'].clip(1, 5)
+        exter = df['ExterQual'].clip(1, 5)
+        area_log = np.log(df['GrLivArea'].clip(lower=1))
+        df['Thermal_Efficiency'] = (heat + exter) / area_log.clip(lower=0.1)
+        return df
+
+    def _location_bias_features(self, df):
+        """地域特性バイアス: IDOTRR減衰 + 高級エリアプレミアム + 非市場取引フラグ"""
+        # --- 1. IDOTRR Distress (線路沿い減衰) ---
+        is_idotrr = (df['Neighborhood'] == 'IDOTRR').astype(int) if df['Neighborhood'].dtype == object \
+            else (df['Neighborhood_te'] < df['Neighborhood_te'].quantile(0.1)).astype(int)
+        # フラグ + Qualとの交互作用 (高Qualでも天井がある)
+        df['IDOTRR_Distress'] = is_idotrr
+        df['IDOTRR_QualCap'] = is_idotrr * df['OverallQual']
+
+        # --- 2. Elite Area Premium (高級エリア×面積) ---
+        elite_areas = {'StoneBr', 'NridgHt', 'NoRidge', 'Crawfor'}
+        is_elite = df['Neighborhood'].isin(elite_areas).astype(int) if df['Neighborhood'].dtype == object \
+            else (df['Neighborhood_te'] > df['Neighborhood_te'].quantile(0.85)).astype(int)
+        df['Elite_Area_Premium'] = is_elite * df['GrLivArea']
+
+        # --- 3. Distress Sale (非市場取引フラグ) ---
+        distress_conds = {'Abnorml', 'Family', 'Alloca'}
+        is_distress = df['SaleCondition'].isin(distress_conds).astype(int) if df['SaleCondition'].dtype == object \
+            else 0
+        df['Is_Distress_Sale'] = is_distress
+        df['Distress_x_Qual'] = is_distress * df['OverallQual']
+
+        # --- 4. Snow Maintenance Burden (雪害リスク・シニア忌避) ---
+        # 平屋根 or 2階建て古家 → 維持困難フラグ
+        is_flat = (df['RoofStyle'] == 'Flat').astype(int) if df['RoofStyle'].dtype == object \
+            else pd.Series(0, index=df.index)
+        is_old_2story = pd.Series(0, index=df.index)
+        if 'HouseStyle' in df.columns and df['HouseStyle'].dtype == object:
+            is_old_2story = ((df['HouseStyle'] == '2Story') &
+                             (df['YearBuilt'] < 1970)).astype(int)
+        burden = (is_flat | is_old_2story).astype(int)
+        df['Snow_Maint_Burden'] = burden
+        # 広さのプラス効果を抑制する交互作用 (burden=1のとき面積が負に作用)
+        df['Burden_x_Area'] = burden * df['GrLivArea']
+
+        return df
+
 
 class CatBoostPreprocessor(HousePricesPreprocessor):
     """CatBoost用前処理: カテゴリカル変数を文字列のまま保持し cat_features で渡す"""
 
-    def __init__(self):
-        super().__init__()
+    def __init__(self, feature_set=None):
+        super().__init__(feature_set=feature_set)
         self.cat_feature_indices_ = None
         self.cat_feature_names_ = None
 
@@ -404,13 +509,18 @@ class CatBoostPreprocessor(HousePricesPreprocessor):
         df = self._fill_missing(df)
         df = self._ordinal_encode(df)
         df = self._apply_te(df)
+        df = self._nbhd_binning(df)
         df = self._qol_features(df)
         df = self._value_standard_features(df)
         df = self._pure_comfort_features(df)
+        df = self._thermal_efficiency(df)
+        df = self._location_bias_features(df)
         # Label Encoding をスキップ — カテゴリカルは文字列のまま保持
         df = self._feature_engineering(df)
+        df = self._drop_redundant(df)
         df = self._drop_cols(df)
         df = self._fix_skewness(df)
+        df = self._select_elite(df)
 
         # 残存する文字列列 = CatBoost用 cat_features
         cat_cols = df.select_dtypes(include=['object']).columns.tolist()
@@ -428,8 +538,8 @@ class CatBoostPreprocessor(HousePricesPreprocessor):
 class CatBoostPipeline:
     """CatBoost用パイプライン: cat_features を自動的に渡す"""
 
-    def __init__(self, model):
-        self.preprocess = CatBoostPreprocessor()
+    def __init__(self, model, feature_set=None):
+        self.preprocess = CatBoostPreprocessor(feature_set=feature_set)
         self.model = model
 
     def fit(self, X, y):
@@ -471,33 +581,44 @@ def load_data():
 def get_models(seed=42):
     """全モデル定義"""
     return {
-        'Ridge': Ridge(alpha=10.0),
-        'Lasso': Lasso(alpha=0.0005, max_iter=10000),
-        'ElasticNet': ElasticNet(alpha=0.0005, l1_ratio=0.5, max_iter=10000),
+        'Ridge': Ridge(alpha=5.0),
+        'Lasso': Lasso(alpha=0.0003, max_iter=10000),
+        'ElasticNet': ElasticNet(alpha=0.0005, l1_ratio=0.7, max_iter=10000),
         'GBR': GradientBoostingRegressor(
             n_estimators=3000, learning_rate=0.05, max_depth=4,
-            min_samples_split=10, min_samples_leaf=5, max_features='sqrt',
-            loss='huber', subsample=0.8, random_state=seed),
+            min_samples_split=15, min_samples_leaf=10, max_features='sqrt',
+            loss='huber', subsample=0.75, random_state=seed),
         'XGBoost': xgb.XGBRegressor(
             n_estimators=2000, learning_rate=0.05, max_depth=4,
             subsample=0.8, colsample_bytree=0.8, reg_alpha=0.1,
             reg_lambda=1.0, random_state=seed, verbosity=0),
         'LightGBM': lgb.LGBMRegressor(
-            n_estimators=2000, learning_rate=0.05, max_depth=5,
-            num_leaves=31, subsample=0.8, colsample_bytree=0.8,
-            reg_alpha=0.1, reg_lambda=1.0, random_state=seed, verbose=-1),
+            n_estimators=3000, learning_rate=0.01, max_depth=4,
+            num_leaves=15, min_child_samples=50, subsample=0.8,
+            colsample_bytree=0.8, reg_alpha=0.1, reg_lambda=1.0,
+            random_state=seed, verbose=-1),
         'CatBoost': CatBoostRegressor(
-            iterations=1000, learning_rate=0.05, depth=6,
-            l2_leaf_reg=3.0, random_seed=seed, verbose=0),
+            iterations=3000, learning_rate=0.03, depth=6,
+            l2_leaf_reg=10, od_type='Iter', od_wait=100,
+            random_seed=seed, verbose=0),
     }
 
+# モデル → 特徴量セットの割り当て
+# LINEAR: 全変数 + 線形専用合成変数 (VSS, Comfort, Livable)
+# TREE: 全変数 - 線形専用合成変数
+MODEL_FEATURE_SET = {
+    'Ridge': 'LINEAR', 'Lasso': 'LINEAR', 'ElasticNet': 'LINEAR',
+    'GBR': 'TREE', 'XGBoost': 'TREE', 'LightGBM': 'TREE',
+    'CatBoost': 'TREE',
+}
 
-def make_pipeline(model, use_catboost=False):
+
+def make_pipeline(model, use_catboost=False, feature_set=None):
     """前処理 + モデルのパイプライン"""
     if use_catboost:
-        return CatBoostPipeline(model)
+        return CatBoostPipeline(model, feature_set=feature_set)
     return Pipeline([
-        ('preprocess', HousePricesPreprocessor()),
+        ('preprocess', HousePricesPreprocessor(feature_set=feature_set)),
         ('model', model),
     ])
 
@@ -510,17 +631,17 @@ def evaluate_models(X, y, n_splits=5, seed=42):
     results = {}
     for name, model in models.items():
         is_cb = name == 'CatBoost'
+        fset = MODEL_FEATURE_SET.get(name)
         if is_cb:
-            # CatBoostは手動CV (cat_features 渡し)
             rmse_list = []
             for train_idx, val_idx in kf.split(X):
-                pipe_cb = make_pipeline(model, use_catboost=True)
+                pipe_cb = make_pipeline(model, use_catboost=True, feature_set=fset)
                 pipe_cb.fit(X.iloc[train_idx], y.iloc[train_idx])
                 pred = pipe_cb.predict(X.iloc[val_idx])
                 rmse_list.append(np.sqrt(mean_squared_error(y.iloc[val_idx], pred)))
             rmse_scores = np.array(rmse_list)
         else:
-            pipe = make_pipeline(model)
+            pipe = make_pipeline(model, feature_set=fset)
             scores = cross_val_score(pipe, X, y, cv=kf,
                                      scoring='neg_mean_squared_error')
             rmse_scores = np.sqrt(-scores)
@@ -529,7 +650,7 @@ def evaluate_models(X, y, n_splits=5, seed=42):
             'std': rmse_scores.std(),
             'scores': rmse_scores,
         }
-        print(f'{name:12s}: RMSLE = {rmse_scores.mean():.5f} ± {rmse_scores.std():.5f}')
+        print(f'{name:12s}: RMSLE = {rmse_scores.mean():.5f} ± {rmse_scores.std():.5f} [Set {fset}]')
 
     return results
 
@@ -542,7 +663,9 @@ def train_and_predict(X, y, X_test, test_ids, model_name='GBR', seed=42):
     """フル学習 → テスト予測 → submission.csv"""
     models = get_models(seed)
     model = models[model_name]
-    pipe = make_pipeline(model)
+    fset = MODEL_FEATURE_SET.get(model_name)
+    is_cb = model_name == 'CatBoost'
+    pipe = make_pipeline(model, use_catboost=is_cb, feature_set=fset)
 
     pipe.fit(X, y)
     preds_log = pipe.predict(X_test)
@@ -575,7 +698,8 @@ def stacking_predict(X, y, X_test, test_ids, seed=42):
     test_preds = np.zeros((n_test, n_models))
 
     for i, (name, model) in enumerate(base_models.items()):
-        print(f'  {name}...', end='', flush=True)
+        fset = MODEL_FEATURE_SET.get(name)
+        print(f'  {name} [Set {fset}]...', end='', flush=True)
         test_preds_fold = np.zeros((n_test, 5))
         is_cb = name == 'CatBoost'
 
@@ -584,7 +708,7 @@ def stacking_predict(X, y, X_test, test_ids, seed=42):
             y_train_fold = y.iloc[train_idx]
             X_val_fold = X.iloc[val_idx]
 
-            pipe = make_pipeline(model, use_catboost=is_cb)
+            pipe = make_pipeline(model, use_catboost=is_cb, feature_set=fset)
             pipe.fit(X_train_fold, y_train_fold)
             oof_preds[val_idx, i] = pipe.predict(X_val_fold)
             test_preds_fold[:, fold] = pipe.predict(X_test)
