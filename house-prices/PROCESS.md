@@ -21,6 +21,7 @@
 | 50738317 | 3/6 | **0.11935** | Feature cleanup + conservative models |
 | 50738791 | 3/6 | 0.12048 | HighValue interaction (悪化→revert) |
 | 50734300 | 3/6 | 0.11993 | Simplified pipeline |
+| - | 3/6 | (pending) | SHAP Top-25 feature selection + multiseed |
 | - | 3/5 | 0.11992 | QOL_Score (旧ベスト) |
 
 ---
@@ -68,6 +69,18 @@ _qol_features → _drop_redundant → _drop_cols → _fix_skewness →
 - **REDUNDANT_COLS** (削除): TotalBsmtSF, 1stFlrSF, 2ndFlrSF, GrLivArea, FullBath, HalfBath, BsmtFullBath, BsmtHalfBath, YearBuilt, GarageArea
 - **SHAP Top-25 選抜**: LightGBM feature importance で動的に上位25変数を選択
 
+### SHAP Top-25 選抜時の CV 結果 (seed=42)
+```
+Stack CV RMSLE = 0.11455 +/- 0.00721
+OOF: Ridge=0.12891, Lasso=0.12888, ElasticNet=0.12894, GBR=0.11961,
+     XGBoost=0.11813, LightGBM=0.12146, CatBoost=0.11961
+Meta weights: Ridge=0.109, Lasso=0.092, EN=0.083, GBR=0.284,
+              XGB=0.170, LGBM=0.119, CB=0.165
+```
+- 線形モデルが 0.128台に悪化 (カテゴリカル情報の損失)
+- tree系はほぼ維持 (XGB=0.118, GBR/CB=0.120)
+- CV上昇は過学習の解消の可能性あり → Public スコアで検証
+
 ### Colab ファイル出力 (絶対パス固定)
 ```
 /content/submissions/          # submission CSV
@@ -75,6 +88,11 @@ _qol_features → _drop_redundant → _drop_cols → _fix_skewness →
 /content/final_submission.csv  # マルチシード最終提出
 ```
 - 最終セルで Google Drive に自動同期: `MyDrive/kaggle-output/house-prices/`
+
+### Colab からの提出方法
+- `files.download()` はブラウザでブロックされることがある
+- **推奨**: Colab セルから直接 Kaggle API (Bearer認証) で提出
+- 提出コードは requests で StartSubmissionUpload → PUT GCS → CreateSubmission → ポーリング
 
 ---
 
@@ -93,7 +111,7 @@ _qol_features → _drop_redundant → _drop_cols → _fix_skewness →
 | 19 | pipeline.ipynb化 + simplified | 0.11993 | 中立 |
 | **20** | **Feature cleanup + conservative models** | **0.11935** | **現ベスト** |
 | 21 | HighValue_Area interaction | 0.12048 | 悪化→revert |
-| 22 | SHAP Top-25 選抜 | — | 実行待ち |
+| 22 | SHAP Top-25 選抜 | (pending) | CV=0.11455, Public待ち |
 
 ---
 
@@ -104,7 +122,7 @@ _qol_features → _drop_redundant → _drop_cols → _fix_skewness →
 | 交互作用特徴量 (手動) | tree系が自動で捉えるため冗長 |
 | Optuna最適化 | n=1460でCV過適合 |
 | 24精鋭変数のみ | n=1460では情報損失 > ノイズ削減 |
-| HighValue_Area × OverallQual | 3エリアのフラグはノイズ化 (0.12048) |
+| HighValue_Area x OverallQual | 3エリアのフラグはノイズ化 (0.12048) |
 | CatBoost depth=4 | 弱すぎ、depth=6が最適 |
 
 ### 学んだ教訓
@@ -114,6 +132,7 @@ _qol_features → _drop_redundant → _drop_cols → _fix_skewness →
 4. **冗長変数の削除は有効** — GrLivArea, GarageArea 等の削除で 0.11992→0.11935
 5. **保守的ハイパラ (低depth, 低lr) が小データでは効く** — XGB/LGBM depth=3, lr=0.01
 6. **新特徴量は慎重に** — HighValue interaction で +0.001 悪化
+7. **CV悪化 = 必ずしも悪いわけではない** — 過学習解消ならPublicで改善の可能性
 
 ---
 
@@ -133,7 +152,7 @@ house-prices/
 
 ## 次のセッションでやるべきこと
 
-1. **SHAP Top-25 の結果確認**: Colab で実行し、CVとPublicを比較
-2. **他カテゴリへのTE拡張**: MSSubClass, Exterior1st/2nd 等
-3. **メタモデルのチューニング**: Ridge alpha=1.0 以外 (Lasso meta等)
-4. **提出はCurlベースのBearer認証**: 詳細は MEMORY.md 参照
+1. **SHAP Top-25 の Public スコア確認** → ベスト更新なら採用、悪化なら revert
+2. **提出セルを pipeline.ipynb に組み込む**: Colab から直接 Kaggle API 提出を自動化
+3. **他カテゴリへのTE拡張**: MSSubClass, Exterior1st/2nd 等
+4. **メタモデルのチューニング**: Ridge alpha=1.0 以外 (Lasso meta等)
