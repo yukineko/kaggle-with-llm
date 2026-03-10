@@ -1,7 +1,9 @@
 __pycache__/
 *.pyc
+.venv/
 catboost_info/
 eda_executed.ipynb
 output.png
 .claude/settings.local.json
 kaggle-mcp/
+m5-forecasting-accuracy/*.csv

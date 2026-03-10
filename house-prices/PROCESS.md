@@ -16,14 +16,17 @@
 
 ### 提出履歴 (主要)
 
-| # | 日時 | Public | 内容 |
-|---|------|--------|------|
-| 50738317 | 3/6 | **0.11935** | Feature cleanup + conservative models |
-| 50738791 | 3/6 | 0.12048 | HighValue interaction (悪化→revert) |
-| 50734300 | 3/6 | 0.11993 | Simplified pipeline |
-| - | 3/9 | (pending) | Geo+Dist_to_Center + Residual Top-40 multiseed |
-| - | 3/6 | (pending) | SHAP Top-25 feature selection + multiseed |
-| - | 3/5 | 0.11992 | QOL_Score (旧ベスト) |
+| 日時 | Public | 内容 |
+|------|--------|------|
+| 3/6 | **0.11935** | **Feature cleanup + conservative models (現ベスト)** |
+| 3/9 | **0.11946** | pipeline.ipynb 微調整 (2位) |
+| 3/9 | 0.11993 | pipeline.ipynb |
+| 3/9 | 0.12277 | pipeline.ipynb |
+| 3/6 | 0.12048 | HighValue interaction (悪化→revert) |
+| 3/6 | 0.12340 | SHAP Top-25 (削りすぎ) |
+| 3/5 | 0.11992-0.11993 | CleanHybrid + NbhdBin 等 (Phase 2 各種) |
+| 3/10 | 0.17501 | tabnet_pipeline v4 stacked (大幅悪化) |
+| | | **全34回提出、詳細は PROGRESS.md 参照** |
 
 ---
 
@@ -118,44 +121,93 @@ TotalBsmtSF, 1stFlrSF, 2ndFlrSF, GrLivArea, FullBath, HalfBath, BsmtFullBath, Bs
 
 ## 改善の履歴
 
-| Step | 内容 | Public | 結果 |
-|------|------|--------|------|
-| 3 | 6モデル比較 (GBR単体) | 0.12933 | baseline |
-| 4 | OOFスタッキング | 0.12271 | 改善 |
-| 6 | マルチシード | 0.12246 | 改善 |
-| 7 | LOO Target Encoding | 0.12063 | 大幅改善 |
-| 8 | ドメイン特徴量 | 0.12030 | 改善 |
-| 9 | CatBoost追加 (7モデル) | 0.11994 | 改善 |
-| 10 | QOL_Score | 0.11992 | ベスト(旧) |
-| 11 | Optuna最適化 | 0.12048 | 悪化 (過学習) |
-| 19 | pipeline.ipynb化 + simplified | 0.11993 | 中立 |
-| **20** | **Feature cleanup + conservative models** | **0.11935** | **現ベスト** |
-| 21 | HighValue_Area interaction | 0.12048 | 悪化→revert |
-| 22 | SHAP Top-25 選抜 | (pending) | CV=0.11455 |
-| 23 | SHAP Top-40 + Neighborhood_te廃止 + Geo features | (pending) | Top-25→40に拡張 |
-| **24** | **2-Stage Residual Learning + Dist_to_Center** | **(pending)** | Geo 5特徴量, 提出API修正 |
+| Phase | Step | 内容 | Public | 結果 |
+|-------|------|------|--------|------|
+| 1 | 3 | 6モデル比較 (GBR単体) | 0.12933 | baseline |
+| 1 | 4 | OOFスタッキング | 0.12271 | 改善 |
+| 1 | 6 | マルチシード | 0.12246 | 改善 |
+| 1 | 7 | LOO Target Encoding | 0.12063 | 大幅改善 |
+| 1 | 8 | ドメイン特徴量 | 0.12030 | 改善 |
+| 1 | 9 | CatBoost追加 (7モデル) | 0.11994 | 改善 |
+| 1 | 10 | QOL_Score | 0.11992 | main.pyベスト |
+| 1 | 11 | Optuna最適化 | 0.12048 | 悪化 (過学習) |
+| 1 | 12-16 | VSS, Starter_Eff, Comfort等 | 0.12033-0.12077 | 全て悪化 |
+| 2 | 17 | Elite 24 features | 0.12505 | 悪化 (情報不足) |
+| 2 | 18-22 | Hybrid/NbhdBin/ThermalEff等 | 0.11992-0.12417 | 中立〜悪化 |
+| **2** | **17(cleanup)** | **Feature cleanup + conservative models** | **0.11935** | **全期間ベスト** |
+| 2 | - | HighValue interaction | 0.12048 | 悪化→revert |
+| 2 | - | SHAP Top-25 選抜 | 0.12340 | 悪化 (削りすぎ) |
+| 3 | - | pipeline.ipynb 微調整 (3/9) | 0.11946 | 2位 |
+| 3 | - | tabnet_pipeline v4 stacked | 0.17501 | 大幅悪化 |
 
 ---
 
 ## 失敗した手法まとめ
 
-| 手法 | 失敗理由 |
-|------|----------|
-| 交互作用特徴量 (手動) | tree系が自動で捉えるため冗余 |
-| Optuna最適化 | n=1460でCV過適合 |
-| 24精鋭変数のみ | n=1460では情報損失 > ノイズ削減 |
-| HighValue_Area x OverallQual | 3エリアのフラグはノイズ化 (0.12048) |
-| CatBoost depth=4 | 弱すぎ、depth=6が最適 |
+### Phase 1: main.py 時代の失敗 (3/3〜3/4)
+
+| 手法 | Public | 悪化幅 | 失敗理由 |
+|------|--------|--------|----------|
+| IsPartial×OverallQual交互作用 | 0.12095 | +0.00032 | Partial=125件(8.6%)で効果薄。tree系が微悪化し相殺 |
+| NbhdCluster (K-Means k=5) | 0.12089 | +0.00026 | 離散境界がtestデータとずれる。CV-Public gap拡大=軽度過学習 |
+| Garage PCA統合 (3変数→1) | 0.12091 | +0.00028 | PC1は79.7%のみ説明。GarageFinishの順序情報が消失 |
+| 交互作用特徴量 (OverallQual×GrLivArea等) | - | CV悪化 | tree系が自動で捉えるため冗余。スタックでノイズ化 |
+| RobustScaler (線形モデルに適用) | - | 改善なし | log1p変換済み特徴量にはスケーリングの追加効果が薄い |
+| KernelRidge (polynomial kernel) | - | CV 0.12793 | 特徴量数が多い状態では線形モデルに劣る |
+| Optuna最適化 (GBR/XGB/LGBM) | 0.12048 | +0.00056 | 個別CVは大幅改善だがPublicで悪化。n=1460でCV過適合 |
+| CatBoost除外 (6モデルスタック) | 0.12012 | +0.00020 | アンサンブル多様性の喪失。GBR依存が過剰に |
+| Value_Standard_Score + VSS×GrLivArea | 0.12033 | +0.00041 | 線形/CatBoost改善だがGBR +0.00191大幅悪化。GBR高重みで全体沈む |
+| Starter_Efficiency | 0.12066 | +0.00074 | QOL_Scoreと冗長。CatBoost除外の影響も |
+| Pure_Comfort_Score (Z-score, 4 comp) | 0.12077 | +0.00085 | 同上。複合スコアの追加効果なし |
+
+### Phase 2: pipeline.ipynb 特徴量選択の失敗 (3/5〜3/6)
+
+| 手法 | Public | 悪化幅 | 失敗理由 |
+|------|--------|--------|----------|
+| Elite 24 features + lightweight CatBoost | 0.12505 | +0.00513 | 情報不足。24変数では住宅価格の多面性を捉えきれない |
+| Hybrid SetA(24)/SetB(30) | 0.12417 | +0.00425 | 線形/tree別に変数を分けてもスタック時に相互補完できない |
+| 96feat + NbhdBin(5q) + VSS/Comfort | 0.12060 | +0.00068 | 特徴量が多すぎてノイズ化。NbhdBin(量子化)は情報損失 |
+| HighValue interaction + feature cleanup | 0.12048 | +0.00056 | HighValueエリアフラグはtree系にノイズ |
+| SHAP Top-25 feature selection | 0.12340 | +0.00348 | 特徴量削りすぎ。Top-40からTop-25への15変数削除で情報喪失 |
+
+### Phase 3: tabnet_pipeline.ipynb の失敗 (3/5, 3/10)
+
+| 手法 | Public | 悪化幅 | 失敗理由 |
+|------|--------|--------|----------|
+| tabnet_pipeline 初期 (submission_final) | 0.13319 | +0.01327 | TabNet単体/初期構成が不安定 |
+| tabnet_pipeline 最適化 | 0.13299 | +0.01307 | 微改善だがまだ大幅に劣る |
+| tabnet_pipeline 簡素化 | 0.12858 | +0.00866 | 改善傾向だが不十分 |
+| **Iowa v4 Stacked (TabNet+LGB+CB)** | **0.17501** | **+0.05566** | **Generational Adaptive Ensembleが壊滅的過学習。世代別重み付けがtestに合わない。TabNetは小データ(n=1460)で不安定** |
+
+### 「中立」だった手法 (悪化はしないが改善もしない)
+
+| 手法 | Public | 備考 |
+|------|--------|------|
+| CleanHybrid + ThermalEff + NbhdBin | 0.11992 | #10タイ。Phase 2の構成変更は中立 |
+| Location bias LINEAR_ONLY | 0.11993 | ほぼ中立 |
+| Simplified pipeline (no LINEAR_ONLY) | 0.11993 | コード簡素化。スコアは不変 |
 
 ### 学んだ教訓
-1. **tree系に明示的交互作用を渡すとノイズになりやすい**
-2. **小データ (n=1460) ではCV過適合に注意** — 個別CV改善がPublicに反映されない
-3. **CatBoostはアンサンブル多様性に大きく貢献** — 除外/弱体化でPublic ~0.002悪化
-4. **冗余変数の削除は有効** — GrLivArea, GarageArea 等の削除で 0.11992→0.11935
-5. **保守的ハイパラ (低depth, 低lr) が小データでは効く** — XGB/LGBM depth=3, lr=0.01
-6. **新特徴量は慎重に** — HighValue interaction で +0.001 悪化
-7. **CV悪化 = 必ずしも悪いわけではない** — 過学習解消ならPublicで改善の可能性
-8. **Neighborhood_te → 地理的特徴量への移行**: TE は leak リスクがあり、Lat/Lon/Distance/KNN で代替可能
+
+**特徴量に関して:**
+1. **tree系に明示的交互作用を渡すとノイズになりやすい** — GBRが自力で捉えるため冗余。特にGBRのスタック重みが高い(~0.35)ので全体を引きずり下ろす
+2. **冗余変数の削除は有効** — GrLivArea(TotalSFと相関0.83), GarageArea(GarageCarsと相関0.88)の除去で0.11992→0.11935
+3. **特徴量選択は40前後が最適** — 25は情報喪失、96はノイズ過多。SHAP Top-40がバランス点
+4. **新特徴量は慎重に** — 34回中、特徴量追加で改善したのはLOO TE, ドメイン特徴量(LSI等), QOL_Scoreのみ
+5. **Neighborhood_te → 地理的特徴量への移行**: TE は leak リスクがあり、Lat/Lon/Distance/KNN で代替可能
+6. **PCA統合は情報損失** — Garage PCA (3→1) で順序情報が消失。元変数を残す方が良い
+
+**モデル・CV に関して:**
+7. **小データ (n=1460) ではCV過適合に注意** — Optuna個別CVは大幅改善だがPublicは悪化。CV-Public gapを常に監視
+8. **CatBoostはアンサンブル多様性に大きく貢献** — 除外/弱体化でPublic ~0.002悪化。OOFの予測パターンがGBR/XGBと異なる
+9. **保守的ハイパラ (低depth, 低lr) が小データでは効く** — XGB/LGBM depth=3, lr=0.01で過学習抑制
+10. **TabNetは小データ (n=1460) で不安定** — 単体もアンサンブルも信頼性が低い。Iowa v4の0.17501は教訓
+11. **CV悪化 = 必ずしも悪いわけではない** — 過学習解消ならPublicで改善の可能性
+
+**プロセスに関して:**
+12. **成功した改善は少ない** — 34回提出中、ベストを更新したのは#1→#2→#4→#5→#8→#9→#10→#28の8回のみ。残り26回は悪化または中立
+13. **Phase 1 (main.py) の限界** — Step 10 (QOL_Score, 0.11992) 以降は6回連続悪化。パイプライン刷新が必要だった
+14. **大きな改善は「構造変更」から** — スタッキング導入(-0.00662), CatBoost追加(-0.00939), 冗余削除(-0.00057)。小手先の特徴量追加ではない
 
 ---
 
@@ -175,8 +227,18 @@ house-prices/
 
 ## 次のセッションでやるべきこと
 
-1. **Colab で再実行して Public スコア確認** — Dist_to_Center 追加 + Residual Learning の効果検証
-2. **SHAP 値で Neighborhood 依存度を確認** — Geo 特徴量が適切に分散しているか
-3. **提出API の動作確認** — blobToken 形式で成功するか
-4. **メタモデルのチューニング**: Ridge alpha=1.0 以外 (Lasso meta等)
-5. **Top-40 vs Top-30 vs Top-50 の比較** — 最適な変数数の探索
+### 優先度高
+1. **#28 (0.11935) の構成を正確に再現・固定** — 現ベストの再現性を確保
+2. **メタモデルのチューニング**: Ridge alpha=1.0 以外 (Lasso meta, HuberRegressor等)
+3. **Top-40 vs Top-30 vs Top-50 の比較** — 最適な変数数の探索
+
+### 優先度中
+4. **Geo特徴量の効果検証** — Dist_to_Center, KNN_Geo_Price が実際にPublicで効いているか
+5. **2-Stage Residual Learning の効果検証** — Residual Learning あり/なしの比較
+6. **CatBoost のハイパラ微調整** — depth=6 vs 5, iterations, l2_leaf_reg
+
+### やらないこと
+- TabNet系 (小データで不安定、0.17501の教訓)
+- 24特徴量以下への極端な絞り込み
+- Optuna (CV過適合のリスク)
+- 手動交互作用特徴量 (tree系にノイズ)
