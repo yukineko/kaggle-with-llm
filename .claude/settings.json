@@ -54,7 +54,11 @@
       "Bash(jupyter kernelspec list)",
       "Bash(/mnt/c/Users/hiroyuki_nakayama/src/kaggle-with-mcp/house-prices/.venv/bin/jupyter kernelspec list)",
       "Bash(/mnt/c/Users/hiroyuki_nakayama/src/kaggle-with-mcp/house-prices/.venv/bin/python -c \"import ipykernel; print\\(f''ipykernel OK: {ipykernel.__version__}''\\)\")",
-      "Bash(ls /mnt/c/Users/hiroyuki_nakayama/src/kaggle-with-mcp/titanic/*.ipynb)"
+      "Bash(ls /mnt/c/Users/hiroyuki_nakayama/src/kaggle-with-mcp/titanic/*.ipynb)",
+      "Read(//mnt/c/Users/hiroyuki_nakayama/**)",
+      "Read(//mnt/**)",
+      "Bash(ls /mnt/c/Users/hiroyuki_nakayama/src/kaggle-with-mcp/m5-forecasting-accuracy/*.csv)",
+      "Bash(xargs -n1 basename)"
     ],
     "additionalDirectories": [
       "/mnt/c/Users/hiroyuki_nakayama/src/kaggle-with-mcp/titanic"

@@ -7,3 +7,5 @@ output.png
 .claude/settings.local.json
 kaggle-mcp/
 m5-forecasting-accuracy/*.csv
+*.parquet
+*.dat
