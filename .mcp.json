@@ -1,11 +1,16 @@
 {
   "mcpServers": {
     "kaggle-mcp": {
-      "command": "bash",
+      "command": "uv",
       "args": [
-        "-lc",
-        "cd ~/src/kaggle-with-mcp/kaggle-mcp && uv run kaggle-mcp"
-      ]
+        "run",
+        "--project",
+        "/mnt/c/Users/hiroyuki_nakayama/src/kaggle-with-mcp/kaggle-mcp",
+        "kaggle-mcp"
+      ],
+      "env": {
+        "VIRTUAL_ENV": ""
+      }
     }
   }
 }
