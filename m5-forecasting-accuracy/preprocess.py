@@ -60,6 +60,25 @@ FOODS_CAT_ID = 0
 HOBBIES_CAT_ID = 1
 HOUSEHOLD_CAT_ID = 2
 
+# ============================================================
+# EDA Step 6: イベント消費クラスター & せっかく買い指数
+# ============================================================
+# A=Outing/Premium-Up, B=Home-Party/Bulk-Up, C=Closed, D=Others/No-Event
+EVENT_CONSUMPTION_CLUSTER: dict[str, int] = {
+    'Easter': 0, 'SuperBowl': 0, 'LaborDay': 0,
+    'ColumbusDay': 0, 'VeteransDay': 0,
+    'IndependenceDay': 1, 'Halloween': 1, 'MemorialDay': 1,
+    'Christmas': 2, 'Thanksgiving': 2,
+}
+EVT_CLUSTER_DEFAULT = 3  # D: Others / No-Event
+
+IMPULSE_BUY_INDEX: dict[str, float] = {
+    'Easter': 36.7, 'LaborDay': 12.8, 'SuperBowl': 5.2,
+    'ColumbusDay': 3.5, 'VeteransDay': 2.1,
+    'MemorialDay': -4.3, 'IndependenceDay': -8.5, 'Halloween': -11.2,
+    'Christmas': 0.0, 'Thanksgiving': 0.0,
+}
+
 
 # ============================================================
 # グローバルカテゴリマッピング (チャンク間で一貫したエンコード)
@@ -203,6 +222,48 @@ def process_chunk(
         df.loc[_m, 'snap_active'] = df.loc[_m, _col].values.astype('int8')
     df['snap_wday'] = (df['snap_active'] * df['wday']).astype('int8')
 
+    # === [EDA Step 6] イベント消費クラスター + せっかく買い指数 ===
+    df['event_consumption_type'] = (
+        df['event_name_1'].map(EVENT_CONSUMPTION_CLUSTER)
+        .fillna(EVT_CLUSTER_DEFAULT).astype('int8')
+    )
+    df['impulse_buy_index'] = (
+        df['event_name_1'].map(IMPULSE_BUY_INDEX)
+        .fillna(0.0).astype('float32')
+    )
+
+    # === [EDA Step 6] SNAP 支給日からの経過日数 (州別 → 統合) ===
+    df['days_since_snap'] = np.int16(999)
+    for _state, _dss_col in [('CA', 'days_since_snap_CA'),
+                              ('TX', 'days_since_snap_TX'),
+                              ('WI', 'days_since_snap_WI')]:
+        _m = df['state_id'] == _state
+        if _m.any():
+            df.loc[_m, 'days_since_snap'] = df.loc[_m, _dss_col].values
+    df.drop(columns=['days_since_snap_CA', 'days_since_snap_TX',
+                      'days_since_snap_WI'], inplace=True)
+
+    # === is_snap_first_weekend: SNAP支給後の最初の週末 (州別 → 統合) ===
+    df['is_snap_first_weekend'] = np.int8(0)
+    for _state, _sfwe_col in [('CA', 'is_snap_first_we_CA'),
+                                ('TX', 'is_snap_first_we_TX'),
+                                ('WI', 'is_snap_first_we_WI')]:
+        _m = df['state_id'] == _state
+        if _m.any():
+            df.loc[_m, 'is_snap_first_weekend'] = df.loc[_m, _sfwe_col].values
+    df.drop(columns=['is_snap_first_we_CA', 'is_snap_first_we_TX',
+                      'is_snap_first_we_WI'], inplace=True)
+
+    # === [EDA Step 6] CA_4 特異性フラグ ===
+    df['is_CA4'] = (df['store_id'] == 'CA_4').astype('int8')
+    # CA_4 × event_consumption_type (スパース対策: クラスタレベルのみ)
+    # 0=非CA4, 1=CA4_Outing, 2=CA4_HomePty, 3=CA4_Closed, 4=CA4_Others
+    df['CA4_x_evt_type'] = np.where(
+        df['is_CA4'] == 1,
+        df['event_consumption_type'] + 1,
+        0
+    ).astype('int8')
+
     # === カテゴリ列エンコード (グローバルマッピング使用) ===
     if cat_mappings is not None:
         for col in CAT_COLS:
@@ -315,6 +376,32 @@ def phase1_features(keep_from_day: int, chunk_size: int) -> None:
         _has_ev.rolling(7, center=True, min_periods=1).max().astype('int8')
     )
     del _has_ev
+
+    # === SNAP 支給日からの経過日数 (州別) ===
+    _d_num_cal = calendar['d'].str[2:].astype('int16')
+    for _state in ['CA', 'TX', 'WI']:
+        _snap_col = f'snap_{_state}'
+        _last_snap_day = _d_num_cal.where(calendar[_snap_col] == 1)
+        _last_snap_day = _last_snap_day.ffill()
+        calendar[f'days_since_snap_{_state}'] = (
+            (_d_num_cal - _last_snap_day).fillna(999).clip(0, 999).astype('int16')
+        )
+
+    # === is_snap_first_weekend: SNAP期間内の最初の土日フラグ (州別) ===
+    # wday: M5では 1=Sat,2=Sun,...,7=Fri → 土日 = wday in {1,2}
+    _is_sat_or_sun = calendar['wday'].isin({1, 2}).astype('int8')
+    for _state in ['CA', 'TX', 'WI']:
+        _snap_col = f'snap_{_state}'
+        _dss = calendar[f'days_since_snap_{_state}']
+        # SNAP支給中(days_since_snap <= 9) かつ 土日 かつ 初回の週末
+        # 初回 = days_since_snap が最小の土日 → days_since_snap <= 6 で最初の土日をカバー
+        calendar[f'is_snap_first_we_{_state}'] = (
+            (calendar[_snap_col] == 1) &  # SNAP active期間
+            (_is_sat_or_sun == 1) &        # 土日
+            (_dss <= 6)                     # 支給開始から6日以内 (最初の週末)
+        ).astype('int8')
+    del _d_num_cal, _last_snap_day, _is_sat_or_sun
+
     print(f'  calendar: {calendar.shape}')
 
     print('  item_max_price 計算中...')
@@ -388,7 +475,9 @@ def phase1_5_target_encoding() -> None:
                 'income_event_sensitivity', 'spike_hint',
                 'cat_snap_sensitivity', 'cat_payday_sensitivity',
                 'snap_cat_lift', 'payday_cat_lift',
-                'luxury_pressure', 'luxury_pressure_x_payday']
+                'luxury_pressure', 'luxury_pressure_x_payday',
+                'weekday_density_ratio',
+                'store_dept_wday_avg', 'store_dept_premium_share']
     if all(c in existing_cols for c in new_cols):
         print(f'[Phase 1.5 SKIP] 店舗プロファイリング特徴量が既に存在')
         del pf
@@ -418,6 +507,49 @@ def phase1_5_target_encoding() -> None:
     del store_prices
     print(f'    P20 thresholds: {dict(sorted(p20_threshold.items()))}')
 
+    # === Pass 0b: item_premium_flag (dept内 Z-score > 2.0) ===
+    print('  [0b] プレミアム品判定 (Z>2.0)...')
+    item_price_acc: dict[int, list] = {}  # item_id(encoded) → [sum, count]
+    item_to_dept: dict[int, int] = {}     # item_id(encoded) → dept_id(encoded)
+    for i in range(n_rg):
+        rg = pf.read_row_group(i, columns=['item_id', 'dept_id', 'sell_price']).to_pandas()
+        for item, dept, price in zip(rg['item_id'].values, rg['dept_id'].values,
+                                      rg['sell_price'].values):
+            p = float(price)
+            if p > 0 and not np.isnan(p):
+                ik = int(item)
+                if ik not in item_price_acc:
+                    item_price_acc[ik] = [0.0, 0]
+                    item_to_dept[ik] = int(dept)
+                item_price_acc[ik][0] += p
+                item_price_acc[ik][1] += 1
+        del rg
+    # dept別の平均・標準偏差
+    from collections import defaultdict
+    dept_item_prices: dict[int, list] = defaultdict(list)
+    item_avg_price: dict[int, float] = {}
+    for ik, (s, c) in item_price_acc.items():
+        avg = s / c
+        item_avg_price[ik] = avg
+        dept_item_prices[item_to_dept[ik]].append(avg)
+    del item_price_acc
+    dept_stats: dict[int, tuple] = {}
+    for dk, prices in dept_item_prices.items():
+        arr = np.array(prices)
+        dept_stats[dk] = (float(arr.mean()), float(arr.std()))
+    del dept_item_prices
+    item_premium_flag: dict[int, int] = {}  # item_id(encoded) → 1 if Z>2.0
+    n_premium = 0
+    for ik, avg in item_avg_price.items():
+        dk = item_to_dept[ik]
+        mean, std = dept_stats[dk]
+        z = (avg - mean) / std if std > 0 else 0
+        if z > 2.0:
+            item_premium_flag[ik] = 1
+            n_premium += 1
+    del item_avg_price, item_to_dept
+    print(f'    Premium items (Z>2.0): {n_premium}')
+
     # === Pass 1: train期間 (d_num < VAL_START_DAY) のみで集計 ===
     print('  [1/3] 集計中 (d_num < %d のみ)...' % VAL_START_DAY)
     te_agg: dict[tuple, list] = {}          # (store_id, dept_id, d_num) → [sum, count]
@@ -437,11 +569,19 @@ def phase1_5_target_encoding() -> None:
     # 乖離率集計: (store_id, cat_id, segment) → [residual_sum, count]
     # segment: 0=SNAP, 1=payday, 2=weekend, 3=other
     resid_agg: dict[tuple, list] = {}
+    # weekday_density_ratio: (store_id, dept_id) → [weekday_sum, wd_cnt, weekend_sum, we_cnt]
+    wdr_agg: dict[tuple, list] = {}
+    # store_dept_wday_avg: (store_id, dept_id, wday) → [sum, count]
+    # イベント日・SNAP日を除外した「真の日常」平均
+    sdw_agg: dict[tuple, list] = {}
+    # store_dept_premium_share: (store_id, dept_id) → [premium_sales, total_sales]
+    sdps_agg: dict[tuple, list] = {}
 
     has_snap_active = 'snap_active' in existing_cols
     has_is_weekend = 'is_weekend' in existing_cols
     base_cols = ['store_id', 'dept_id', 'd_num', 'sales', 'day', 'cat_id',
-                 'discount_ratio', 'sell_price', 'roll_mean_28']
+                 'discount_ratio', 'sell_price', 'roll_mean_28', 'wday',
+                 'event_name_1', 'item_id']
     if has_snap_active:
         base_cols.append('snap_active')
     else:
@@ -479,6 +619,51 @@ def phase1_5_target_encoding() -> None:
                 te_agg[key][1] += 1
             else:
                 te_agg[key] = [float(sales), 1]
+        # --- weekday_density_ratio 集計 (store × dept) ---
+        for sid, did, s, is_we in zip(
+            rg_tr['store_id'].values, rg_tr['dept_id'].values,
+            rg_tr['sales'].values, rg_tr['is_weekend'].values,
+        ):
+            wdr_key = (int(sid), int(did))
+            if wdr_key not in wdr_agg:
+                wdr_agg[wdr_key] = [0.0, 0, 0.0, 0]
+            if int(is_we) == 0:  # weekday
+                wdr_agg[wdr_key][0] += float(s)
+                wdr_agg[wdr_key][1] += 1
+            else:  # weekend
+                wdr_agg[wdr_key][2] += float(s)
+                wdr_agg[wdr_key][3] += 1
+        # --- store_dept_wday_avg 集計 (イベント日・SNAP日を除外した日常平均) ---
+        for sid, did, s, wday_v, snap_v, ev_v in zip(
+            rg_tr['store_id'].values, rg_tr['dept_id'].values,
+            rg_tr['sales'].values, rg_tr['wday'].values,
+            rg_tr['snap_active'].values, rg_tr['event_name_1'].values,
+        ):
+            # イベント日とSNAP日を除外 → 純粋な「日常」
+            if int(snap_v) == 1:
+                continue
+            # event_name_1 は encode 済み: -1=NoEvent, >=0=有イベント
+            if int(ev_v) >= 0:
+                continue
+            sdw_key = (int(sid), int(did), int(wday_v))
+            if sdw_key not in sdw_agg:
+                sdw_agg[sdw_key] = [0.0, 0]
+            sdw_agg[sdw_key][0] += float(s)
+            sdw_agg[sdw_key][1] += 1
+        # --- store_dept_premium_share 集計 (Z>2.0品の数量シェア) ---
+        if 'item_id' in rg_tr.columns and 'sell_price' in rg_tr.columns:
+            for sid, did, s, item_v in zip(
+                rg_tr['store_id'].values, rg_tr['dept_id'].values,
+                rg_tr['sales'].values, rg_tr['item_id'].values,
+            ):
+                sdps_key = (int(sid), int(did))
+                if sdps_key not in sdps_agg:
+                    sdps_agg[sdps_key] = [0.0, 0.0]
+                sf = float(s)
+                sdps_agg[sdps_key][1] += sf  # total
+                item_key = int(item_v)
+                if item_key in item_premium_flag:
+                    sdps_agg[sdps_key][0] += sf  # premium
         # --- 6指標の集計 ---
         for sid, snap, sales, day, is_we, cat, dr, sp, dnum, rm28 in zip(
             rg_tr['store_id'].values, rg_tr['snap_active'].values,
@@ -693,6 +878,29 @@ def phase1_5_target_encoding() -> None:
     del stockpile_daily
     print(f'    Stockpiling index: {dict(sorted(stockpile_idx.items()))}')
 
+    # weekday_density_ratio = weekday_avg / weekend_avg (store × dept)
+    wdr_lookup: dict[tuple, float] = {}
+    for key, (wd_sum, wd_cnt, we_sum, we_cnt) in wdr_agg.items():
+        wd_avg = wd_sum / wd_cnt if wd_cnt > 0 else 0.0
+        we_avg = we_sum / we_cnt if we_cnt > 0 else 0.0
+        wdr_lookup[key] = (wd_avg / we_avg) if we_avg > 0 else 1.0
+    del wdr_agg
+    print(f'    Weekday density ratio entries: {len(wdr_lookup)} (store×dept)')
+
+    # store_dept_wday_avg = イベント・SNAP除外の日常平均 (store × dept × wday)
+    sdw_lookup: dict[tuple, float] = {}
+    for key, (s_sum, s_cnt) in sdw_agg.items():
+        sdw_lookup[key] = s_sum / s_cnt if s_cnt > 0 else 0.0
+    del sdw_agg
+    print(f'    Store-dept-wday avg entries: {len(sdw_lookup)} (store×dept×wday)')
+
+    # store_dept_premium_share = プレミアム品の数量シェア (store × dept)
+    sdps_lookup: dict[tuple, float] = {}
+    for key, (prem, total) in sdps_agg.items():
+        sdps_lookup[key] = (prem / total) if total > 0 else 0.0
+    del sdps_agg
+    print(f'    Store-dept premium share entries: {len(sdps_lookup)} (store×dept)')
+
     # 乖離率の平均 per (store_id, cat_id, segment)
     resid_mean: dict[tuple, float] = {}
     for rkey, (rsum, rcnt) in resid_agg.items():
@@ -886,6 +1094,34 @@ def phase1_5_target_encoding() -> None:
             rg['luxury_pressure'].values * rg['payday_flag'].values.astype('float32')
         ).astype('float32')
         del _sp
+        # weekday_density_ratio (store × dept, EDA Step 6b)
+        wdr_keys = list(zip(
+            rg['store_id'].astype(int).values,
+            rg['dept_id'].astype(int).values,
+        ))
+        rg['weekday_density_ratio'] = (
+            pd.Series(wdr_keys).map(wdr_lookup).fillna(1.0).astype('float32').values
+        )
+        del wdr_keys
+        # store_dept_wday_avg (store × dept × wday → 日常平均)
+        sdw_keys = list(zip(
+            rg['store_id'].astype(int).values,
+            rg['dept_id'].astype(int).values,
+            rg['wday'].astype(int).values,
+        ))
+        rg['store_dept_wday_avg'] = (
+            pd.Series(sdw_keys).map(sdw_lookup).fillna(0.0).astype('float32').values
+        )
+        del sdw_keys
+        # store_dept_premium_share (store × dept → プレミアム品シェア)
+        sdps_keys = list(zip(
+            rg['store_id'].astype(int).values,
+            rg['dept_id'].astype(int).values,
+        ))
+        rg['store_dept_premium_share'] = (
+            pd.Series(sdps_keys).map(sdps_lookup).fillna(0.0).astype('float32').values
+        )
+        del sdps_keys
         # 旧列を削除 (存在する場合)
         for old_col in ['snap_uplift_store']:
             if old_col in rg.columns:

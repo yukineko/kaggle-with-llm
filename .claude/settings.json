@@ -58,7 +58,10 @@
       "Read(//mnt/c/Users/hiroyuki_nakayama/**)",
       "Read(//mnt/**)",
       "Bash(ls /mnt/c/Users/hiroyuki_nakayama/src/kaggle-with-mcp/m5-forecasting-accuracy/*.csv)",
-      "Bash(xargs -n1 basename)"
+      "Bash(xargs -n1 basename)",
+      "Bash(.venv/bin/python3 -c \":*)",
+      "Bash(.venv/bin/python3 run_eda_step7.py)",
+      "Bash(python3 -c \":*)"
     ],
     "additionalDirectories": [
       "/mnt/c/Users/hiroyuki_nakayama/src/kaggle-with-mcp/titanic"

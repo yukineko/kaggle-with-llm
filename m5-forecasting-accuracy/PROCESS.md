@@ -97,4 +97,91 @@
 | 5 | 離散的 luxury threshold | 見送り | 連続値で代替済み |
 
 ---
-*Next Step: parquet 再生成 → Training → RMSE 変化の確認。luxury_pressure の効果次第で指示 No.3 の実装可否を判断。*
+
+## 2026-03-13: EDA Step 6-7 深化 + 構造ベースライン特徴量の実装
+
+### 5. EDA 分析結果 (Step 6-7)
+
+#### Step 6: イベント消費クラスター & 店舗特異性
+
+- **イベント消費クラスター分類:**
+  - A=Outing/Premium-Up (Easter, SuperBowl, LaborDay, ColumbusDay, VeteransDay)
+  - B=Home-Party/Bulk-Up (IndependenceDay, Halloween, MemorialDay)
+  - C=Closed (Christmas, Thanksgiving)
+  - D=Others/No-Event
+- **せっかく買い指数 (Impulse Buy Index):** Easter +36.7%, LaborDay +12.8% が突出。Christmas/Thanksgiving は店舗閉鎖のため 0。
+- **CA_4 特異性:** イベント反応が他店舗と異なるパターン → `is_CA4` フラグ + `CA4_x_evt_type` 交差特徴量で対応。
+- **SNAP 心理的ラグ:** 支給日当日よりも「最初の週末」に消費が集中 → `is_snap_first_weekend`, `days_since_snap` を導入。
+
+#### Step 7a: イベント普遍性分析
+- **ユニバーサルイベント:** LaborDay (+24.9%, std=6.5), Christmas (-99.9%, std=0.1)
+- **リージョナルイベント:** Easter (std=18.5), SuperBowl (std=8.8) → 店舗間分散が大きい
+
+#### Step 7b: ラマダン深掘り分析
+- CA_2 が最も感度が高い (score=5.16, FOODS_2 P75+ lift +10.4%)
+- ただしラマダンはM5期間中の出現頻度が限定的
+
+#### Step 7c: 価格プロファイリング
+- **item_premium_flag:** dept内 Z-score > 2.0 の高価格アイテムを判定
+- **store_dept_premium_share:** 高価格品の数量シェア → pb_ratio との相関 r=-0.176（独立 → 両方保持）
+- **発見:** TX_1, TX_2 = "taste signal" stores（低 luxury_index だが高 premium_share）
+
+### 6. 指示 No.4: EDA知見の特徴量化 (実装済み)
+
+#### ① Phase 1 追加特徴量 (process_chunk 内)
+| 特徴量 | 型 | 説明 |
+|---|---|---|
+| `event_consumption_type` | int8 | イベント消費クラスター (0-3) |
+| `impulse_buy_index` | float32 | せっかく買い指数 |
+| `days_since_snap` | int16 | SNAP支給日からの経過日数 (州別→統合) |
+| `is_snap_first_weekend` | int8 | SNAP期間内の最初の土日フラグ |
+| `is_CA4` | int8 | CA_4 店舗フラグ |
+| `CA4_x_evt_type` | int8 | CA_4 × イベントクラスター交差 (0-4) |
+
+- **カレンダー前処理にも追加:** `days_since_snap_{CA,TX,WI}`, `is_snap_first_we_{CA,TX,WI}` を calendar DataFrame に事前計算
+
+#### ② Phase 1.5 追加特徴量 (構造ベースライン)
+| 特徴量 | 型 | 説明 |
+|---|---|---|
+| `store_dept_wday_avg` | float32 | store×dept×wday の「日常」平均売上 (イベント日・SNAP日を除外) |
+| `store_dept_premium_share` | float32 | store×dept 内の高価格品 (Z>2.0) 数量シェア |
+| `weekday_density_ratio` | float32 | store×dept の平日/週末 売上密度比 |
+
+- **Pass 0b 追加:** `item_premium_flag` (dept内 Z-score > 2.0) を全 row_group スキャンで算出
+- **Pass 1 追加:** `sdw_agg`, `sdps_agg`, `wdr_agg` の集計ループ (train期間のみ)
+- **Pass 2 追加:** lookup からの列書き込み
+
+#### ③ 実装方針
+- `preprocess.py` と `pipeline.ipynb` の両方にインラインで同一ロジックを実装
+- pipeline.ipynb は Colab 実行用（`import preprocess` ではなくインライン）
+- 既存 parquet を削除して Phase 1 から再実行が必要
+
+### 7. 検討中・未実装の分析と特徴量
+
+#### 指示 No.3 (継続検討): 所得指紋 (Affluence Score)
+- ステータス: **保留** — luxury_pressure + premium_share の効果確認後に判断
+- 内容: カテゴリ内 tercile 分割 → 価格帯別 SNAP/給与日リフト → `affluence_score = lift_high / lift_low`
+
+#### roll_mean_56 の要否検討
+- **ユーザーの問題提起:** 56日周期の根拠は何か？入金イベントベースなら28日で十分では？
+- **結論:** roll_mean_56 は「2ヶ月の季節トレンド」を捕捉する目的で有効だが、Feature Importance で確認後に判断
+- **検証方法:** roll_mean_56 あり/なしで RMSE 比較（Colab 実行後に実施）
+
+### 8. 特徴量の優先度ロードマップ (更新)
+
+| 優先度 | 特徴量 | ステータス | 備考 |
+|---|---|---|---|
+| 1 | `not_on_shelf` + train除外 | **実装済み** | sell_price NaN ベース |
+| 2 | `luxury_pressure` / `luxury_pressure_x_payday` | **実装済み** | 連続値、Phase 1.5 Pass 2 |
+| 3 | `event_consumption_type` / `impulse_buy_index` | **実装済み** | EDA Step 6 |
+| 4 | `days_since_snap` / `is_snap_first_weekend` | **実装済み** | SNAP心理ラグ |
+| 5 | `is_CA4` / `CA4_x_evt_type` | **実装済み** | CA_4 特異性 |
+| 6 | `store_dept_wday_avg` | **実装済み** | 構造ベースライン (日常平均) |
+| 7 | `store_dept_premium_share` | **実装済み** | 高価格品シェア |
+| 8 | `weekday_density_ratio` | **実装済み** | 平日/週末密度比 |
+| 9 | SKU密度（store×category 品揃え数） | 保留 | Zero-Sales 関連の補助指標 |
+| 10 | `affluence_score`（所得指紋） | 検討中 | premium_share 効果確認後 |
+| 11 | roll_mean_56 要否 | 検証待ち | Feature Importance で判断 |
+
+---
+*Next Step: Colab で pipeline.ipynb 実行 (parquet 削除 → Phase 1 → 1.5 → 2 → Training) → RMSE + Feature Importance 確認 → roll_mean_56 判断 → affluence_score 実装可否判断*
