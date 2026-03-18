@@ -26,6 +26,7 @@ m5-forecasting-accuracy/
 ├── run_eda_step7.py       # EDA Step 7 一括実行スクリプト
 ├── figures/               # EDA 出力図 (28枚)
 ├── PROCESS.md             # 本ファイル
+├── FEATURES.md            # 特徴量レジストリ (version管理)
 └── *.csv                  # 元データ
 ```
 
@@ -356,6 +357,9 @@ roll_mean_56 依存を打破するため、価格因子を3つの観点から深
 | 29 | `29_price_elasticity_analysis.png` | アイテム別価格弾力性 (6パネル) |
 | 30 | `30_price_wall_analysis.png` | 価格の壁・家計制約分析 (6パネル) |
 | 31 | `31_price_anchoring.png` | アンカリング・Value Gap 分析 (6パネル) |
+| 32 | `32_store_snap_vs_hobbies.png` | SNAP リフト vs HOBBIES 売上比率 |
+| 33 | `33_foods_snap_lift_vs_price.png` | FOODS SNAP リフト vs 価格帯分析 |
+| 34 | `34_household_snap_lift_vs_price.png` | HOUSEHOLD SNAP リフト vs 価格帯分析 |
 
 ---
 
@@ -429,7 +433,7 @@ roll_mean_56 依存を打破するため、価格因子を3つの観点から深
   - `price_rank_in_dept`: (sell_price - dept_min) / (dept_max - dept_min)
 
 #### GPU 変更 (2モデル分割)
-- **FOODS モデル** (cat_id=0): `feature_fraction=0.7` (価格系の学習機会を強制的に増やす)
+- **FOODS モデル** (cat_id=0): `feature_fraction=0.8`
 - **NON_FOODS モデル** (cat_id=1,2): HOBBIES + HOUSEHOLD 統合 (48K の HOUSEHOLD サンプル保護)
   - `num_boost_round=2500`, `early_stopping=80`
 
@@ -439,11 +443,69 @@ roll_mean_56 依存を打破するため、価格因子を3つの観点から深
 
 ---
 
+## 2026-03-18: Step A 初回結果 + 修正
+
+### Step A 初回結果 (parquet 未再生成)
+- **RMSE: 2.1412** (前回 2.1357 → +0.0055 悪化)
+- FOODS: 2.5914, HOBBIES: 1.4523, HOUSEHOLD: 1.8172 (改善)
+- **value_gap 系3特徴量が importance=0.00** — `price_rolling_mean_56` が parquet に存在しなかった
+- `price_rank_in_dept` は FOODS #12, NON_FOODS #13 で有効
+- `feature_fraction=0.7` は悪化要因 → 0.8 に戻す
+
+### Step A 修正結果 (2026-03-18)
+- **Val RMSE (全体): 2.1324** (前回 2.1412 → 0.0088 改善、ベースライン 2.1357 からも改善)
+  - FOODS: 2.5783
+  - HOBBIES: 1.4513
+  - HOUSEHOLD: 1.8120
+- **重要度変化**:
+  - `value_gap` が FOODS #10, NON_FOODS #7 にランクイン。価格系特徴量の有効性が証明された。
+  - `ewma_28` が全重要度の約 40-50% を占める構造へシフト（`roll_mean_56` 独占からの脱却）。
+  - `price_rolling_mean_56` も Top 10 付近に浮上。
+
+---
+
+## 2026-03-18: SNAP Deep Dive 分析結果
+
+### 12. SNAP 依存度と需要構造の相関 (Deep Dive)
+
+#### Store SNAP Lift vs HOBBIES Ratio
+- **相関係数:** r = -0.8328 (強い負の相関)
+- **洞察:** SNAP依存度（支給日の売上リフト）が高い店舗ほど、HOBBIESカテゴリの売上比率が低い。
+- **背景:** 低所得商圏においては、可処分所得が食品などの必需品に集中し、嗜好品への支出が抑制されている構造が鮮明に現れている。
+- 図: `figures/32_store_snap_vs_hobbies.png`
+
+#### Item SNAP Lift vs Price (FOODS)
+- **相関係数:** r = +0.2296 (弱い正の相関)
+- **発見:** 意外にも、高価格帯の食品の方が SNAP 支給日のリフトが大きい傾向。
+- **購買パターン:**
+    - **「プチ贅沢」行動:** FOODS_2 (飲料等) の $5-$11 帯が SNAP リフト Top 20 に多数ランクイン。支給日に「普段買えない少し良い食品」を購入する行動パターンが示唆される。
+    - **「大量まとめ買い」行動:** 一方で $0.20 帯の超低価格品 (FOODS_3) も Top 20 入りしており、支給日に生活必需品を安価に大量確保する動きも併存。
+- 図: `figures/33_foods_snap_lift_vs_price.png`
+
+#### Item SNAP Lift vs Price (HOUSEHOLD) — 分析完了
+- **背景:** SNAP支給による家計内の現金余裕が HOUSEHOLD カテゴリに波及する仮説。
+- **相関係数:** r = -0.1031 (弱い負の相関)
+- **結論:** FOODS（1.8倍のリフト）に比べ、HOUSEHOLD は 1.0 付近（無反応）に密集。SNAP の直接的な影響は極めて限定的（ノイズに近い）。
+- 図: `figures/34_household_snap_lift_vs_price.png`
+
+### 13. 戦略的転換：因果関係の「外科的整理」 (Gemini's Insight)
+
+#### 現状の課題
+- `roll_mean_56` が Feature Importance の 50% を独占し、モデルが平均値に逃げている。
+- **原因:** HOUSEHOLD/HOBBIES など、SNAP と事実上無関係なカテゴリにまで SNAP フラグを入れているため、情報の希釈（Dilution）が起き、モデルが因果を特定できなくなっている。
+
+#### 新戦略：因果の物理的切断
+1. **Poverty Index (住民購買力) の数値化**:
+   - `store_id` という単なる「名前」ではなく、図32の強い負の相関 (r=-0.83) を活用した `store_poverty_index` (SNAP依存度) を導入し、地域の「背景」を直接モデルに教える。
+2. **HOUSEHOLD/HOBBIES からの SNAP 変数除外**:
+   - これらカテゴリの学習から `is_snap` 関連を物理的に切断し、代わりに「給与日」や「週末」にモデルの注意力を集中させる。
+3. **FOODS の二極化モデル化**:
+   - 図33の「安値まとめ買い」と「中高価格プチ贅沢」という SNAP 支給日の二極化行動を、価格帯別の交差特徴量で捉える。
+
+---
+
 ## Next Steps
 
-1. **Colab で pipeline_cpu.ipynb 実行** — parquet 削除 → Phase 1 (price_rolling_mean_56 追加) → Phase 1.5 (Pass 0c + 5特徴量) → Phase 2
-2. **Colab で pipeline_gpu.ipynb 実行** — 2モデル学習 → RMSE + Feature Importance 確認
-3. **Step A 検証基準:** 新特徴量が Top 20 入り & RMSE < 2.1338 なら成功
-4. **Step B 検証** — roll_mean_56 系3つを削除 → 価格系 importance 浮上確認
-5. **Step C 検証** — 残差学習 (`target = sales - roll_mean_28`) の実験
-6. **提出** — RMSE 改善確認後、Kaggle に提出
+1. **Claude Code による Step 1〜3 の実行 (Decision Edition)** — [`CLAUDE_INSTRUCTIONS.md`](CLAUDE_INSTRUCTIONS.md) に基づき、店舗購買力の数値化、Non-Foods の SNAP 切断、FOODS の二極化モデル化を順次実施。
+2. **因果関係の学習検証** — 新戦略により、`ewma_28` への過度な依存が低下し、因果系特徴量（Poverty Index, 週末, 給料日）の importance が上昇するかを確認。
+3. **Kaggle 提出** — 全体 RMSE が **2.1324** を安定して下回った段階で、提出用ファイルを生成。
