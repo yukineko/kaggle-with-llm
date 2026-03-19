@@ -1,0 +1,53 @@
+Loading data...
+Computing store-level snap_lift / payday_lift...
+
+=== Store Segments ===
+  CA_1  : snap_lift=1.0982, payday_lift=1.0307 → Type-B (Balanced)
+  CA_2  : snap_lift=1.0237, payday_lift=1.0397 → Type-B (Balanced)
+  CA_3  : snap_lift=1.1084, payday_lift=1.0272 → Type-S (SNAP)
+  CA_4  : snap_lift=1.0465, payday_lift=1.0263 → Type-B (Balanced)
+  TX_1  : snap_lift=1.1273, payday_lift=1.1252 → Type-B (Balanced)
+  TX_2  : snap_lift=1.1035, payday_lift=1.0943 → Type-P (Payroll)
+  TX_3  : snap_lift=1.1180, payday_lift=1.1130 → Type-B (Balanced)
+  WI_1  : snap_lift=1.0496, payday_lift=1.0481 → Type-B (Balanced)
+  WI_2  : snap_lift=1.3289, payday_lift=1.1316 → Type-B (Balanced)
+  WI_3  : snap_lift=1.2519, payday_lift=1.0853 → Type-B (Balanced)
+
+Plotting segment scatter...
+Saved: m5-forecasting-accuracy/figures/35_segment_scatter.png
+
+Computing daily sales by segment...
+  seg_cat_day entries: 279
+
+Plotting monthly curves...
+Saved: m5-forecasting-accuracy/figures/36_monthly_curve.png
+
+Plotting payday decay...
+Saved: m5-forecasting-accuracy/figures/37_payday_decay.png
+
+Plotting category composition...
+Saved: m5-forecasting-accuracy/figures/38_category_composition.png
+
+Plotting depletion effect...
+Saved: m5-forecasting-accuracy/figures/40_depletion_effect.png
+
+============================================================
+Step 13: Household Segmentation Summary
+============================================================
+
+Type-S (SNAP): ['CA_3']
+  FOODS       : payday=2.784 → mid=2.828 → pre-payday=2.561 (decay=-8.0%)
+  HOBBIES     : payday=0.937 → mid=0.909 → pre-payday=0.858 (decay=-8.5%)
+  HOUSEHOLD   : payday=1.406 → mid=1.381 → pre-payday=1.327 (decay=-5.6%)
+
+Type-P (Payroll): ['TX_2']
+  FOODS       : payday=2.012 → mid=1.774 → pre-payday=1.769 (decay=-12.1%)
+  HOBBIES     : payday=0.622 → mid=0.589 → pre-payday=0.587 (decay=-5.7%)
+  HOUSEHOLD   : payday=0.825 → mid=0.787 → pre-payday=0.778 (decay=-5.7%)
+
+Type-B (Balanced): ['CA_1', 'CA_2', 'CA_4', 'TX_1', 'TX_3', 'WI_1', 'WI_2', 'WI_3']
+  FOODS       : payday=1.587 → mid=1.486 → pre-payday=1.447 (decay=-8.8%)
+  HOBBIES     : payday=0.553 → mid=0.520 → pre-payday=0.513 (decay=-7.3%)
+  HOUSEHOLD   : payday=0.700 → mid=0.632 → pre-payday=0.624 (decay=-10.9%)
+
+=== Done ===

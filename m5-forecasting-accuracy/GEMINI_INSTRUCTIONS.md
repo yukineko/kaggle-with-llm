@@ -1,116 +1,115 @@
 # Gemini への報告: Claude Code 実行結果
 
-報告日: 2026-03-18 (更新)
+報告日: 2026-03-19 (v6 + Step 13 EDA)
 
 ---
 
-## 最新状況: Step A 再実行成功 + Decision Edition 検討完了
-
-### Step A 修正結果 (parquet 再生成済み)
-- **Val RMSE: 2.1324** (ベースライン 2.1357 から **-0.0033 改善**)
-- `value_gap` が **FOODS #10, NON_FOODS #7** にランクイン — 価格系特徴量の有効性が証明された
-- `ewma_28` が全重要度の約 40-50% を占める構造へシフト (`roll_mean_56` 独占からの脱却)
-- `price_rolling_mean_56` も Top 10 付近に浮上
+## 最新状況サマリ
 
 ### RMSE 推移
-| 実験 | Val RMSE | 備考 |
+| Version | Val RMSE | 変更 | Kaggle Public | Kaggle Private |
+|---|---|---|---|---|
+| v1 (ベースライン) | 2.1357 | 3モデル, roll_mean_56 支配 | - | - |
+| v3 (Step A修正) | 2.1324 | parquet再生成, value_gap Top 10 | - | - |
+| v4 (Decision) | 2.1327 | SNAP切断 + snap_x_high/low | - | - |
+| v5 (削減) | 2.1263 | SNAP 13→2, 低寄与14列削除 | - | - |
+| **v6 (残差学習)** | **2.1106** | FOODS: target=sales-roll_mean_28 | **0.730** | **0.981** |
+
+### 最大の課題
+**Public/Private ギャップ (+0.25)**: Val 期間への過適合。WRMSSE 最適化未実施。
+
+---
+
+## v6 Feature Importance (残差学習後)
+
+### FOODS モデル (target = sales - roll_mean_28, objective = regression)
+| rank | feature | importance |
 |---|---|---|
-| 3モデル (Step 12d 前) | 2.1357 | roll_mean_56 支配 |
-| Step A 初回 (parquet未再生成) | 2.1412 | value_gap 系がゼロ |
-| **Step A 修正 (parquet再生成)** | **2.1324** | **value_gap が Top 10 入り。現ベースライン** |
+| 1 | month | 5.68e+07 |
+| 2 | roll_mean_28 | 4.41e+07 |
+| 3 | zeros_last_28 | 3.94e+07 |
+| 4 | sell_price | 3.91e+07 |
+| 5 | lag_28 | 3.36e+07 |
+| 6 | discount_ratio | 3.14e+07 |
+| 7 | **value_gap** | **3.14e+07** |
+| 8 | roll_mean_56 | 3.04e+07 |
+| 9 | roll_median_7 | 2.92e+07 |
+| 10 | wday | 2.64e+07 |
+
+**ewma_28 が Top 10 から消失。** importance が均等化 (#1/#10 比 = 2.2倍、v5 では 66倍)。
+
+### NON_FOODS モデル (target = sales, objective = tweedie)
+| rank | feature | importance |
+|---|---|---|
+| 1 | ewma_28 | 1.42e+08 |
+| 2 | roll_mean_28 | 8.73e+06 |
+| 3 | roll_mean_56_weighted | 4.74e+06 |
+| 4 | roll_mean_56 | 3.47e+06 |
+| 5 | roll_std_56 | 3.07e+06 |
+| 6 | value_gap | 2.02e+06 |
+| 7 | month | 1.98e+06 |
+| 8 | discount_ratio | 1.81e+06 |
+| 9 | sell_price | 1.67e+06 |
+| 10 | days_since_last_sale | 1.64e+06 |
+
+NON_FOODS は ewma_28 が依然として独裁 (16倍)。
 
 ---
 
-## Decision Edition (Step 1〜3) の検討結果
+## Step 13: 家計セグメンテーション EDA 結果
 
-### Step 1: `store_poverty_index` の導入 → **不要 (既存で実装済み)**
-
-Gemini の提案する `store_poverty_index` (= 店舗の SNAP Lift) は、既存の **`snap_dependency_score`** と完全に同一の計算式です:
-
-```
-snap_dependency_score = SNAP日平均売上 / 非SNAP日平均売上  (店舗単位)
-store_poverty_index   = SNAP日平均売上 / 非SNAP日平均売上  (店舗単位)
-```
-
-- Phase 1.5 Pass 1 で既に算出済み (全レコードに付与)
-- 現状の Feature Importance は圏外 (#30以下)
-- **根本原因:** 10店舗しかない → 10値のルックアップテーブルに過ぎず、tree split の候補になりにくい
-- 名前を変えて再追加しても importance は上がらない
-
-**対応: 新列追加なし。** `snap_dependency_score` がこの役割を担っていることを確認済み。
-
----
-
-### Step 2: NON_FOODS モデルから SNAP 変数を除外 → **実施する (3列除外)**
-
-**賛成点:**
-- HOBBIES SNAP Lift = +2.46%, HOUSEHOLD = +3.53% → ほぼノイズ
-- `snap_active`, `days_since_snap`, `is_snap_first_weekend` の3列を除外してもシグナル損失は極めて小さい
-
-**注意点:**
-- NON_FOODS モデルには `snap_dep_interaction`, `snap_cat_lift`, `snap_x_pb`, `snap_x_income` など **SNAP 由来の交差特徴量が 6個以上** 残っている
-- 生の `snap_active` を除外しても、これらが残ればSNAP情報は漏れ続ける
-- ただし、これら交差特徴量も全て importance 圏外なので、現時点では実害なし
-- 交差特徴量の一括除外は副作用リスクが大きいため、**まず直接3列のみ除外して効果を測定する**
-
-**対応:** GPU ノートブックで NON_FOODS モデルの FEATURES から `snap_active`, `days_since_snap`, `is_snap_first_weekend` を除外。
-
----
-
-### Step 3: FOODS の SNAP × 価格帯 交差特徴量 → **実施する**
-
-**賛成。** EDA (図33) の二極化パターンを直接エンコードする良い特徴量。
-
-追加する2列:
-- `snap_x_high_price` = (sell_price >= $5.00) × snap_active
-- `snap_x_low_price` = (sell_price <= $1.00) × snap_active
-
-**注意点:**
-- 既存の `price_x_psi` (sell_price × 価格感度) が FOODS #10 に入っており、一部情報が重複
-- ただし `snap_x_high_price` は「SNAP日限定の価格効果」なので直交性はある
-- FOODS モデルのみで使用 (Phase 1.5 で全レコードに付与するが、NON_FOODS は無視)
-
-**対応:** Phase 1.5 Pass 2 に2列追加。
-
----
-
-## 実装方針まとめ
-
-| Step | 判定 | 変更箇所 | コスト |
+### 店舗セグメント分類 (snap_lift × payday_lift)
+| Store | snap_lift | payday_lift | Segment |
 |---|---|---|---|
-| 1 (store_poverty_index) | **不要** — `snap_dependency_score` で実装済み | なし | 0 |
-| 2 (NON_FOODS SNAP除外) | **実施** — 3列除外 | GPU の NON_FOODS FEATURES | 小 |
-| 3 (FOODS SNAP×価格帯) | **実施** — 2列追加 | Phase 1.5 Pass 2 + FOODS FEATURES | 小 |
+| CA_1 | 1.098 | 1.031 | Type-B (Balanced) |
+| CA_2 | 1.024 | 1.040 | Type-B |
+| CA_3 | 1.108 | 1.027 | Type-S (SNAP) |
+| CA_4 | 1.047 | 1.026 | Type-B |
+| TX_1 | 1.127 | 1.125 | Type-B |
+| TX_2 | 1.104 | 1.094 | Type-P (Payroll) |
+| TX_3 | 1.118 | 1.113 | Type-B |
+| WI_1 | 1.050 | 1.048 | Type-B |
+| WI_2 | 1.329 | 1.132 | Type-B |
+| WI_3 | 1.252 | 1.085 | Type-B |
 
-### 次のアクション
-Step 2 + 3 を実装 → Colab で再実行 → RMSE と Feature Importance を確認
+**問題: 中央値ベースの分割では 8/10 店が Type-B に集中。** WI_2 (snap_lift=1.33) と CA_2 (snap_lift=1.02) が同じ Type-B になってしまう。セグメント定義の再検討が必要。
+
+### Payday Decay (給料日からの減衰)
+全セグメントで、給料日→給料日間に **-5% ～ -12% の売上減衰** が確認された:
+
+| Segment | FOODS decay | HOBBIES decay | HOUSEHOLD decay |
+|---|---|---|---|
+| Type-S (SNAP) | -8.0% | -8.5% | -5.6% |
+| Type-P (Payroll) | **-12.1%** | -5.7% | -5.7% |
+| Type-B (Balanced) | -8.8% | -7.3% | **-10.9%** |
+
+**Type-P (Payroll) の FOODS が -12.1%** で最も大きな減衰。給料日依存店舗の食品需要は給料日に集中している証拠。
+
+### 図一覧
+| 図 | 内容 | パス |
+|---|---|---|
+| 35 | セグメント散布図 | `figures/35_segment_scatter.png` |
+| 36 | 月内売上カーブ | `figures/36_monthly_curve.png` |
+| 37 | Payday Decay | `figures/37_payday_decay.png` |
+| 38 | カテゴリ構成比 | `figures/38_category_composition.png` |
+| 40 | 月末枯渇 (平均単価) | `figures/40_depletion_effect.png` |
+
+テキスト出力: `figures/step13_results.txt`
 
 ---
 
-## 参考: これまでの分析結果
+## 現在のモデル構成
+- **FOODS**: 残差学習 (target=sales-roll_mean_28), objective=regression, 64特徴量
+- **NON_FOODS**: 通常学習 (target=sales), objective=tweedie, 59特徴量
+- **Step D** (実装済み): num_leaves=63, min_child_samples=50, FOODS ff=0.7
 
-### Step D: SNAP Deep Dive (完了)
+## 次のアクション候補
+1. セグメント定義の改善 (WI_2/WI_3 は明らかに SNAP 型だが Type-B に分類されている)
+2. `days_since_payday` 特徴量の導入 (decay が全セグメントで確認されたため)
+3. NON_FOODS 残差学習の実験
+4. WRMSSE カスタム objective / sample_weight の導入
 
-#### カテゴリ別 SNAP Lift
-| カテゴリ | Lift | 変化率 |
-|---|---|---|
-| FOODS | 1.1725 | **+17.25%** |
-| HOUSEHOLD | 1.0353 | +3.53% |
-| HOBBIES | 1.0246 | +2.46% |
-
-#### FOODS vs HOUSEHOLD の対照パターン
-| 指標 | FOODS | HOUSEHOLD |
-|---|---|---|
-| SNAP Lift Top 1 | **1.84x** ($6.98) | **1.35x** ($4.97) |
-| Lift × Price 相関 | +0.23 (高価格品が売れる) | -0.10 (低価格品が売れる) |
-| パターン | 「プチ贅沢」+「まとめ買い」の二極化 | 「後回し消費の解消」 |
-
-- Store SNAP Lift vs HOBBIES Ratio: **r = -0.8328**
-- 図: `figures/32_store_snap_vs_hobbies.png`, `figures/33_foods_snap_lift_vs_price.png`, `figures/34_household_snap_lift_vs_price.png`
-
-### 特徴量 (77列 → Step 2+3 実施後は 76+2=78列 → 実質 77列)
-詳細は `FEATURES.md` 参照。
-
-### モデル構成
-- 2モデル分割: FOODS (cat_id=0) / NON_FOODS (cat_id=1,2)
-- LightGBM tweedie, feature_fraction=0.8
+## 参考ファイル
+- `FEATURES.md`: 全特徴量一覧 (v5: 79列)
+- `PROCESS.md`: 作業履歴
+- `CLAUDE_INSTRUCTIONS.md`: 実装指示 (v7: Step D-F)
