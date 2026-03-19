@@ -14,7 +14,7 @@
 | v3 | 2026-03-18 | Step A修正版: `price_rolling_mean_56` 再生成 | 2.1324 | `value_gap` が Top 10 入り、大幅改善 |
 | v4 | 2026-03-18 | Decision Edition: +2列, FOODS -3列, NON_FOODS -6列 | 2.1327 | SNAP切断 + 低寄与削除 |
 | v5 | 2026-03-19 | SNAP大幅削減: FOODS -14列, NON_FOODS -19列 | **2.1263** | SNAP 13→2 (FOODS) / 0 (NF) |
-| v6 | 2026-03-19 | Step C: FOODS残差学習 (target=sales-roll_mean_28) | ? | NON_FOODS は通常学習を維持 |
+| v6 | 2026-03-19 | Step C: FOODS残差学習 (target=sales-roll_mean_28) | **2.1106** | ewma_28独裁崩壊、value_gap #7, sell_price #4 |
 
 ---
 

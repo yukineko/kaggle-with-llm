@@ -580,9 +580,66 @@ roll_mean_56 依存を打破するため、価格因子を3つの観点から深
 
 ---
 
+## 2026-03-19: v6 結果 — Step C 残差学習 (FOODS のみ)
+
+### 19. RMSE: 2.1106 (過去最高、ベースラインから -0.0251)
+
+| 指標 | v5 (pruning) | **v6 (残差学習)** | 改善 | ベースラインからの累計 |
+|---|---|---|---|---|
+| 全体 | 2.1263 | **2.1106** | **-0.0157** | **-0.0251** |
+| FOODS | 2.5692 | **2.5451** | **-0.0241** | -0.0384 |
+| HOBBIES | 1.4502 | 1.4488 | -0.0014 | -0.0012 |
+| HOUSEHOLD | 1.8117 | 1.8115 | -0.0002 | -0.0092 |
+
+### 20. Step C 実装内容
+- **FOODS**: target = sales - roll_mean_28 (残差学習), objective = `regression` (MSE)
+- **NON_FOODS**: target = sales (通常学習), objective = `tweedie` (変更なし)
+- 推論時: FOODS の予測値 = model.predict() + roll_mean_28 → clip(0)
+
+### 21. Feature Importance (v6) — ewma_28 独裁の崩壊
+
+**FOODS Top 10 (残差学習):**
+| Rank | Feature | Importance | v5比 |
+|---|---|---|---|
+| 1 | **month** | 5.68e+07 | v5 #8 → **#1** |
+| 2 | roll_mean_28 | 4.41e+07 | — |
+| 3 | zeros_last_28 | 3.94e+07 | 圏外 → **#3** |
+| 4 | **sell_price** | 3.91e+07 | 圏外 → **#4** |
+| 5 | lag_28 | 3.36e+07 | — |
+| 6 | discount_ratio | 3.14e+07 | v5 #6 |
+| 7 | **value_gap** | **3.14e+07** | v5 #9 → **#7** (imp 7.7倍) |
+| 8 | roll_mean_56 | 3.04e+07 | v5 #3 |
+| 9 | roll_median_7 | 2.92e+07 | 圏外 → **#9** |
+| 10 | **wday** | 2.64e+07 | 圏外 → **#10** |
+
+**NON_FOODS Top 10 (変更なし):**
+| Rank | Feature | Importance |
+|---|---|---|
+| 1 | ewma_28 | 1.42e+08 |
+| 2 | roll_mean_28 | 8.73e+06 |
+| 3 | roll_mean_56_weighted | 4.74e+06 |
+| 4 | roll_mean_56 | 3.47e+06 |
+| 5 | roll_std_56 | 3.31e+06 |
+| 6 | **value_gap** | 2.02e+06 ★ |
+| 7 | month | 1.98e+06 |
+| 8 | discount_ratio | 1.81e+06 |
+| 9 | sell_price | 1.67e+06 |
+| 10 | days_since_last_sale | 1.64e+06 |
+
+### 22. 分析
+
+- **ewma_28 が FOODS Top 10 から消失**: 残差学習により「売上レベル」が roll_mean_28 で分離され、ewma_28 の独裁が終了
+- **importance の均等化**: #1 (5.7e7) と #10 (2.6e7) の比率が **2.2倍** (v5 では 66倍)
+- **因果系特徴量の躍進**: sell_price (#4), value_gap (#7), wday (#10) が初めて Top 10 入り
+- **「なぜ今日売れるか」の学習が開始**: 季節性 (month), 価格 (sell_price, value_gap), 曜日 (wday), 需要パターン (zeros_last_28) がバランスよく配置
+- **FOODS の改善が支配的**: -0.0241 (全体改善 -0.0157 の大部分)
+- **NON_FOODS は安定**: 通常学習を維持し、ewma_28 が引き続き有効
+
+---
+
 ## Next Steps
 
-1. **Step B: roll_mean_56 系の削除** — ewma_28 独走を崩す本命。value_gap が #5/#6 にいるので安全に実行可能
-2. **Step C: 残差学習** — target = sales - roll_mean_28 で ewma_28 の「レベル予測」を分離
-3. **さらなる削減** — #20 以下の低寄与特徴量の刈り込み
-4. **提出** — RMSE 2.1263 を Kaggle に提出して Public Score を確認
+1. **NON_FOODS にも残差学習を適用検討** — ただし間欠需要品 (HOBBIES/HOUSEHOLD) で残差が {-0.3, +0.7} の2値的になるリスクあり
+2. **roll_mean_56 系の削除** — FOODS では残差学習で重要度が #8 まで下がったが、まだ有用な可能性
+3. **さらなる特徴量削減** — FOODS #20 以下を刈り込み (v5 と同じアプローチ)
+4. **提出** — RMSE 2.1106 を Kaggle に提出して Public Score を確認
