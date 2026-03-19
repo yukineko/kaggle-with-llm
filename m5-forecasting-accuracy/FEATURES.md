@@ -13,7 +13,7 @@
 | v2 | 2026-03-16 | +6列 (Step 12d 価格弾力性系) + store profile 既存29列 | 2.1357 | 3モデル, 新特徴量は importance 圏外 |
 | v3 | 2026-03-18 | Step A修正版: `price_rolling_mean_56` 再生成 | 2.1324 | `value_gap` が Top 10 入り、大幅改善 |
 | v4 | 2026-03-18 | Decision Edition: +2列, FOODS -3列, NON_FOODS -6列 | 2.1327 | SNAP切断 + 低寄与削除 |
-| v5 | 2026-03-19 | SNAP大幅削減: FOODS -14列, NON_FOODS -19列 | ? | SNAP 13→2 (FOODS) / 0 (NF) |
+| v5 | 2026-03-19 | SNAP大幅削減: FOODS -14列, NON_FOODS -19列 | **2.1263** | SNAP 13→2 (FOODS) / 0 (NF) |
 
 ---
 

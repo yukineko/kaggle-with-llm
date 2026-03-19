@@ -529,7 +529,60 @@ roll_mean_56 依存を打破するため、価格因子を3つの観点から深
 
 ---
 
-## 期待される結果
-1. **過学習の抑制**: ノイズを除去することで、決定木が真の因果（給料日、週末、価格乖離）を捉えやすくなる。
-2. **重要度の変化**: `ewma_28` への依存度が低下し、因果系特徴量が上位に躍り出ること。
-3. **解釈性の向上**: 「フラグ」という記号から「家計の潤い」というアナログなコンテキストへのシフト。
+## 2026-03-19: v5 結果 — SNAP削減 + 特徴量 pruning
+
+### 16. RMSE: 2.1263 (過去最高)
+
+| 指標 | ベースライン (v1) | v4 (Decision Ed.) | **v5 (pruning)** | 累計改善 |
+|---|---|---|---|---|
+| 全体 | 2.1357 | 2.1327 | **2.1263** | **-0.0094** |
+| FOODS | 2.5835 | 2.5784 | **2.5692** | -0.0143 |
+| HOBBIES | 1.4500 | 1.4519 | **1.4502** | ±0 |
+| HOUSEHOLD | 1.8207 | 1.8130 | **2.8117** | -0.0090 |
+
+### 17. Feature Importance (v5)
+
+**FOODS Top 10:**
+| Rank | Feature | Importance |
+|---|---|---|
+| 1 | ewma_28 | 1.94e+08 |
+| 2 | roll_mean_56_weighted | 3.08e+07 |
+| 3 | roll_mean_56 | 2.40e+07 |
+| 4 | roll_std_56 | 1.13e+07 |
+| 5 | **price_rolling_mean_56** | 5.57e+06 ★ |
+| 6 | discount_ratio | 5.54e+06 |
+| 7 | days_since_last_sale | 5.52e+06 |
+| 8 | month | 4.99e+06 |
+| 9 | **value_gap** | 4.08e+06 ★ |
+| 10 | ewma_7 | 2.94e+06 |
+
+**NON_FOODS Top 10:**
+| Rank | Feature | Importance |
+|---|---|---|
+| 1 | ewma_28 | 1.42e+08 |
+| 2 | roll_mean_28 | 8.69e+06 |
+| 3 | roll_mean_56_weighted | 5.13e+06 |
+| 4 | roll_mean_56 | 3.46e+06 |
+| 5 | roll_std_56 | 3.06e+06 |
+| 6 | **value_gap** | 2.02e+06 ★ |
+| 7 | month | 1.87e+06 |
+| 8 | discount_ratio | 1.81e+06 |
+| 9 | days_since_last_sale | 1.62e+06 |
+| 10 | wday | 1.41e+06 |
+
+### 18. 分析
+
+- **特徴量削減が改善に直結:** 78→65/60 に減らして RMSE -0.0064。情報の希釈が解消された
+- **価格系が浮上:** `price_rolling_mean_56` が FOODS #5、`value_gap` が FOODS #9 / NON_FOODS #6
+- **SNAP 全削除は正解:** NON_FOODS で SNAP 13列を全削除しても RMSE 微改善
+- **ewma_28 の支配度はさらに上昇:** FOODS 6.3倍、NON_FOODS 16.3倍 (削除された特徴量の importance を吸収)
+- **deal_intensity, above_price_wall は NOT FOUND:** 削除が正しく反映されている
+
+---
+
+## Next Steps
+
+1. **Step B: roll_mean_56 系の削除** — ewma_28 独走を崩す本命。value_gap が #5/#6 にいるので安全に実行可能
+2. **Step C: 残差学習** — target = sales - roll_mean_28 で ewma_28 の「レベル予測」を分離
+3. **さらなる削減** — #20 以下の低寄与特徴量の刈り込み
+4. **提出** — RMSE 2.1263 を Kaggle に提出して Public Score を確認
