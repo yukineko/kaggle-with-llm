@@ -504,8 +504,32 @@ roll_mean_56 依存を打破するため、価格因子を3つの観点から深
 
 ---
 
-## Next Steps
+## 2026-03-19: Step 13 (Decision Edition) — 因果関係の純鋭化と特徴量削減
 
-1. **Claude Code による Step 1〜3 の実行 (Decision Edition)** — [`CLAUDE_INSTRUCTIONS.md`](CLAUDE_INSTRUCTIONS.md) に基づき、店舗購買力の数値化、Non-Foods の SNAP 切断、FOODS の二極化モデル化を順次実施。
-2. **因果関係の学習検証** — 新戦略により、`ewma_28` への過度な依存が低下し、因果系特徴量（Poverty Index, 週末, 給料日）の importance が上昇するかを確認。
-3. **Kaggle 提出** — 全体 RMSE が **2.1324** を安定して下回った段階で、提出用ファイルを生成。
+### 14. 分析サマリ：慣性モデル（EWMA）からの脱却
+- **現状評価:** RMSE 2.1327。`value_gap` 等の価格系特徴量は Top 10 入りを果たしたが、依然として `ewma_28` が支配的。
+- **根本課題:** モデルが「なぜ今日売れるのか」という因果を理解するための「状況証拠（コンテキスト）」が不足しており、0/1 フラグによる情報の希釈（Dilution）が起きている。
+- **新戦略:** 
+    - **FOODS**: 「プチ贅沢（Treat Yourself）」行動への焦点化。
+    - **NON_FOODS**: SNAPというノイズの完全排除と、給料日サイクルへの集中。
+
+### 15. 戦略：特徴量の少数精鋭化 (Surgical Pruning)
+
+#### ① FOODS モデル (78 → 64 features)
+- **残す SNAP 特徴量:** `snap_active`, `snap_x_high_price` (+$5) の2列のみ。
+- **削除 (14列):** 
+    - 冗長な交差: `snap_wday`, `is_snap_first_weekend`, `snap_first_10d`
+    - 低寄与スコア: `snap_dependency_score`, `snap_dep_interaction`, `snap_x_income`, `snap_x_pb`, `snap_cat_lift`, `cat_snap_sensitivity`
+    - 効果不明: `snap_x_low_price` (-$1)
+    - 低寄与 (Step 4): `deal_intensity`, `above_price_wall`, `days_since_spike`
+
+#### ② NON_FOODS モデル (78 → 59 features)
+- **SNAP 排除:** すべての SNAP 関連変数（13列）を完全に削除。
+- **低寄与削除 (Step 4):** `luxury_pressure_x_payday`, `impulse_buy_index`, `event_consumption_type`, `deal_intensity`, `above_price_wall`, `days_since_spike`
+
+---
+
+## 期待される結果
+1. **過学習の抑制**: ノイズを除去することで、決定木が真の因果（給料日、週末、価格乖離）を捉えやすくなる。
+2. **重要度の変化**: `ewma_28` への依存度が低下し、因果系特徴量が上位に躍り出ること。
+3. **解釈性の向上**: 「フラグ」という記号から「家計の潤い」というアナログなコンテキストへのシフト。

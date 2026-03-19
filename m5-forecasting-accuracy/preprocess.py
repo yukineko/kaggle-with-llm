@@ -322,6 +322,13 @@ def process_chunk(
           .reset_index(level=0, drop=True).astype('float32')
     )
 
+    # === Price rolling mean (56日) — value_gap 算出用 (Step 12d) ===
+    df['price_rolling_mean_56'] = (
+        df.groupby('id')['sell_price']
+          .rolling(56, min_periods=1).mean()
+          .reset_index(level=0, drop=True).astype('float32')
+    )
+
     # === 補充サイクル (スパイクからの経過日数) ===
     _rm7 = df['roll_mean_7'].values
     _s28_vals = df['_s28'].values
@@ -477,7 +484,10 @@ def phase1_5_target_encoding() -> None:
                 'snap_cat_lift', 'payday_cat_lift',
                 'luxury_pressure', 'luxury_pressure_x_payday',
                 'weekday_density_ratio',
-                'store_dept_wday_avg', 'store_dept_premium_share']
+                'store_dept_wday_avg', 'store_dept_premium_share',
+                'snap_x_high_price', 'snap_x_low_price',
+                'value_gap', 'value_gap_x_elasticity', 'deal_intensity',
+                'above_price_wall', 'price_rank_in_dept']
     if all(c in existing_cols for c in new_cols):
         print(f'[Phase 1.5 SKIP] 店舗プロファイリング特徴量が既に存在')
         del pf
@@ -549,6 +559,73 @@ def phase1_5_target_encoding() -> None:
             n_premium += 1
     del item_avg_price, item_to_dept
     print(f'    Premium items (Z>2.0): {n_premium}')
+
+    # === Pass 0c: item_elasticity, item_price_cv, dept_price_range (Step 12d) ===
+    print('  [0c] item弾力性・価格CV・dept価格レンジ算出中...')
+    # item_elas_stats[item_id] = [n, Σp, Σs, Σp², Σps]
+    item_elas_stats: dict[int, list] = {}
+    # dept_price_range[dept_id] = [min_price, max_price]
+    dept_price_range: dict[int, list] = {}
+    for i in range(n_rg):
+        rg = pf.read_row_group(i, columns=['item_id', 'dept_id', 'd_num',
+                                             'sell_price', 'sales']).to_pandas()
+        rg_tr = rg[rg['d_num'].values < VAL_START_DAY]
+        for item, dept, sp, s in zip(
+            rg_tr['item_id'].values, rg_tr['dept_id'].values,
+            rg_tr['sell_price'].values, rg_tr['sales'].values,
+        ):
+            p = float(sp)
+            if np.isnan(p) or p <= 0:
+                continue
+            sf = float(s)
+            ik = int(item)
+            dk = int(dept)
+            if ik not in item_elas_stats:
+                item_elas_stats[ik] = [0, 0.0, 0.0, 0.0, 0.0]
+            st = item_elas_stats[ik]
+            st[0] += 1
+            st[1] += p
+            st[2] += sf
+            st[3] += p * p
+            st[4] += p * sf
+            if dk not in dept_price_range:
+                dept_price_range[dk] = [p, p]
+            else:
+                if p < dept_price_range[dk][0]:
+                    dept_price_range[dk][0] = p
+                if p > dept_price_range[dk][1]:
+                    dept_price_range[dk][1] = p
+        del rg, rg_tr
+
+    # item_elasticity: cov(p,s)/var(p) * mean_p/(mean_s+1)
+    item_elasticity: dict[int, float] = {}
+    item_price_cv: dict[int, float] = {}
+    for ik, (n, sp, ss, sp2, sps) in item_elas_stats.items():
+        if n < 10:
+            item_elasticity[ik] = 0.0
+            item_price_cv[ik] = 0.0
+            continue
+        mean_p = sp / n
+        mean_s = ss / n
+        var_p = sp2 / n - mean_p ** 2
+        cov_ps = sps / n - mean_p * mean_s
+        # price CV
+        item_price_cv[ik] = float(np.sqrt(max(var_p, 0)) / mean_p) if mean_p > 0 else 0.0
+        # normalized elasticity
+        if var_p > 1e-8 and mean_s > 0:
+            item_elasticity[ik] = float((cov_ps / var_p) * (mean_p / (mean_s + 1)))
+        else:
+            item_elasticity[ik] = 0.0
+    del item_elas_stats
+
+    # Price wall thresholds (from EDA Step 12b)
+    # cat_id: 0=FOODS, 1=HOBBIES, 2=HOUSEHOLD
+    PRICE_WALL: dict[int, float] = {0: 5.0, 1: 8.0, 2: 10.0}
+    n_volatile = sum(1 for v in item_price_cv.values() if v > 0.05)
+    print(f'    item_elasticity entries: {len(item_elasticity)}')
+    print(f'    item_price_cv entries: {len(item_price_cv)} (Volatile CV>0.05: {n_volatile})')
+    print(f'    dept_price_range: {dict(sorted(dept_price_range.items()))}')
+    print(f'    Price wall thresholds: {PRICE_WALL}')
 
     # === Pass 1: train期間 (d_num < VAL_START_DAY) のみで集計 ===
     print('  [1/3] 集計中 (d_num < %d のみ)...' % VAL_START_DAY)
@@ -1122,6 +1199,61 @@ def phase1_5_target_encoding() -> None:
             pd.Series(sdps_keys).map(sdps_lookup).fillna(0.0).astype('float32').values
         )
         del sdps_keys
+
+        # === SNAP × 価格帯 交差特徴量 (Step 3: FOODS 二極化) ===
+        _sp_pass2 = rg['sell_price'].fillna(0).values.astype('float32')
+        _snap_v = rg['snap_active'].values.astype('float32') if 'snap_active' in rg.columns else np.float32(0)
+        rg['snap_x_high_price'] = ((_sp_pass2 >= 5.0) * _snap_v).astype('int8')
+        rg['snap_x_low_price']  = ((_sp_pass2 <= 1.0) * (_sp_pass2 > 0) * _snap_v).astype('int8')
+
+        # === Step 12d 新特徴量 (価格弾力性・需要構造) ===
+        _item_int = rg['item_id'].astype(int).values
+        _cat_int = rg['cat_id'].astype(int).values
+        _dept_int = rg['dept_id'].astype(int).values
+
+        # value_gap: (sell_price - price_rolling_mean_56) / price_rolling_mean_56
+        if 'price_rolling_mean_56' in rg.columns:
+            _prm56 = rg['price_rolling_mean_56'].fillna(0).values.astype('float32')
+        else:
+            _prm56 = _sp_pass2  # fallback: no gap
+        rg['value_gap'] = np.where(
+            _prm56 > 0,
+            (_sp_pass2 - _prm56) / (_prm56 + 1e-8),
+            np.float32(0)
+        ).astype('float32')
+
+        # item_elasticity & item_price_cv lookup (vectorized)
+        _elas = np.array([item_elasticity.get(int(x), 0.0) for x in _item_int], dtype='float32')
+        _pcv = np.array([item_price_cv.get(int(x), 0.0) for x in _item_int], dtype='float32')
+        _is_volatile = (_pcv > 0.05).astype('float32')
+
+        # value_gap_x_elasticity: value_gap * elasticity * (volatile only)
+        rg['value_gap_x_elasticity'] = (
+            rg['value_gap'].values * _elas * _is_volatile
+        ).astype('float32')
+
+        # deal_intensity: max(0, -value_gap) * |elasticity| * snap_active * (volatile only)
+        rg['deal_intensity'] = (
+            np.maximum(0, -rg['value_gap'].values) * np.abs(_elas) * _snap_v * _is_volatile
+        ).astype('float32')
+
+        # above_price_wall: 1 if sell_price > category threshold
+        _wall = np.array([PRICE_WALL.get(int(c), 10.0) for c in _cat_int], dtype='float32')
+        rg['above_price_wall'] = (_sp_pass2 > _wall).astype('int8')
+
+        # price_rank_in_dept: (sell_price - dept_min) / (dept_max - dept_min)
+        _dmin = np.array([dept_price_range.get(int(d), [0, 1])[0] for d in _dept_int], dtype='float32')
+        _dmax = np.array([dept_price_range.get(int(d), [0, 1])[1] for d in _dept_int], dtype='float32')
+        _drange = _dmax - _dmin
+        rg['price_rank_in_dept'] = np.where(
+            _drange > 0,
+            (_sp_pass2 - _dmin) / (_drange + 1e-8),
+            np.float32(0.5)
+        ).astype('float32')
+
+        del _sp_pass2, _snap_v, _item_int, _cat_int, _dept_int
+        del _elas, _pcv, _is_volatile, _wall, _dmin, _dmax, _drange, _prm56
+
         # 旧列を削除 (存在する場合)
         for old_col in ['snap_uplift_store']:
             if old_col in rg.columns:
