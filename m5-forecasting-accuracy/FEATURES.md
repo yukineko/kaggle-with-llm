@@ -12,25 +12,29 @@
 | v1 | 2026-03-15 | 初版: 48列 (lag/rolling/price/SNAP/store profile) | 2.1353 | 3モデル (FOODS/HOBBIES/HOUSEHOLD) |
 | v2 | 2026-03-16 | +6列 (Step 12d 価格弾力性系) + store profile 既存29列 | 2.1357 | 3モデル, 新特徴量は importance 圏外 |
 | v3 | 2026-03-18 | Step A修正版: `price_rolling_mean_56` 再生成 | 2.1324 | `value_gap` が Top 10 入り、大幅改善 |
-| v4 | 2026-03-18 | Decision Edition: +2列, FOODS -3列, NON_FOODS -6列 | ? | SNAP切断 + 低寄与削除 |
+| v4 | 2026-03-18 | Decision Edition: +2列, FOODS -3列, NON_FOODS -6列 | 2.1327 | SNAP切断 + 低寄与削除 |
+| v5 | 2026-03-19 | SNAP大幅削減: FOODS -14列, NON_FOODS -19列 | ? | SNAP 13→2 (FOODS) / 0 (NF) |
 
 ---
 
-## v4 — 79 Features (Current)
+## v5 — 79 Features in parquet, 64/59 effective (Current)
 
-### v3 → v4 変更点
-- **追加 (+2):** `snap_x_high_price`, `snap_x_low_price` (Phase 1.5)
-- **FOODS モデル除外 (-3):** `deal_intensity`, `above_price_wall`, `days_since_spike` (Step 4: 低寄与)
-- **NON_FOODS モデル除外 (-6):**
-  - SNAP切断 (Step 2): `snap_active`, `days_since_snap`, `is_snap_first_weekend`
-  - 低寄与削除 (Step 4): `luxury_pressure_x_payday`, `impulse_buy_index`, `event_consumption_type`
+### v4 → v5 変更点
+- **FOODS モデル除外 (-14, うち新規-11):**
+  - SNAP削減: `snap_wday`, `days_since_snap`, `is_snap_first_weekend`, `snap_first_10d`, `snap_dependency_score`, `snap_dep_interaction`, `snap_x_income`, `snap_x_pb`, `snap_cat_lift`, `cat_snap_sensitivity`, `snap_x_low_price`
+  - Step 4 (継続): `deal_intensity`, `above_price_wall`, `days_since_spike`
+  - **残す SNAP: `snap_active`, `snap_x_high_price` の2列のみ**
+- **NON_FOODS モデル除外 (-19, うち新規-13):**
+  - SNAP全排除 (13列): `snap_active`, `snap_wday`, `days_since_snap`, `is_snap_first_weekend`, `snap_first_10d`, `snap_dependency_score`, `snap_dep_interaction`, `snap_x_income`, `snap_x_pb`, `snap_cat_lift`, `cat_snap_sensitivity`, `snap_x_high_price`, `snap_x_low_price`
+  - Step 4 (継続): `luxury_pressure_x_payday`, `impulse_buy_index`, `event_consumption_type`, `deal_intensity`, `above_price_wall`, `days_since_spike`
 - parquet スキーマは変更なし — GPU 学習時に `drop_features` で除外
+- **根拠:** SNAP系13特徴量が FOODS/NON_FOODS 共に Top 10 に1つも入らず、ewma_28 が吸収済み
 
 ### モデル別の実効特徴量数
 | モデル | parquet 列数 | 除外 | **実効** |
 |---|---|---|---|
-| FOODS | 79 | 3 | **76** |
-| NON_FOODS | 79 | 6 | **73** |
+| FOODS | 79 | 14 | **65** |
+| NON_FOODS | 79 | 19 | **60** |
 
 ---
 
