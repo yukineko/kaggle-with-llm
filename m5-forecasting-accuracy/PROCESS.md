@@ -637,9 +637,41 @@ roll_mean_56 依存を打破するため、価格因子を3つの観点から深
 
 ---
 
+## 2026-03-19: Kaggle 初回提出結果
+
+### 23. Kaggle Score (v6, Late Submission)
+
+| | Score (WRMSSE) |
+|---|---|
+| Public | **0.72977** |
+| Private | 0.98067 |
+
+- **M5 の評価指標は WRMSSE** (Weighted Root Mean Squared Scaled Error)。ローカルの RMSE (2.1106) とは別指標。
+- Public 0.73 は M5 全体の中央値付近 (1位: ~0.52, Top 100: ~0.55)。
+- **Public → Private で +0.25 の大幅悪化** が最大の課題。
+
+### 24. Public/Private ギャップの原因分析
+
+1. **Val 期間への過剰適合**: roll_mean_28 等の統計量が Val 直前のデータに最適化されており、28日先の Eval 期間では精度が落ちる
+2. **残差学習のベースライン劣化**: target = sales - roll_mean_28 で学習するが、Eval 期間の roll_mean_28 は Val 期間のデータから計算される → Val と Eval でベースラインの質が異なる
+3. **WRMSSE の重み構造**: 売上が大きいアイテム/部門ほど重みが大きい。RMSE では見えない偏りが存在
+4. **Eval 期間は COVID-19 直前 (2016年5月頃)**: 消費パターンの構造変化がある可能性
+
+### 25. 改善の方向性
+
+| 課題 | 対策 | 優先度 |
+|---|---|---|
+| WRMSSE 非最適化 | WRMSSE カスタム目的関数 or 重み付き RMSE の導入 | 高 |
+| Public/Private ギャップ | 複数 28日ウィンドウでの time-series CV | 高 |
+| Eval の roll_mean_28 劣化 | recursive prediction (28日を逐次予測) | 中 |
+| NON_FOODS の改善余地 | 残差学習の適用検討 (間欠需要のリスクあり) | 中 |
+| さらなる特徴量削減 | FOODS #20 以下を刈り込み | 低 |
+
+---
+
 ## Next Steps
 
-1. **NON_FOODS にも残差学習を適用検討** — ただし間欠需要品 (HOBBIES/HOUSEHOLD) で残差が {-0.3, +0.7} の2値的になるリスクあり
-2. **roll_mean_56 系の削除** — FOODS では残差学習で重要度が #8 まで下がったが、まだ有用な可能性
-3. **さらなる特徴量削減** — FOODS #20 以下を刈り込み (v5 と同じアプローチ)
-4. **提出** — RMSE 2.1106 を Kaggle に提出して Public Score を確認
+1. **WRMSSE 対応** — tweedie/regression ではなく、WRMSSE の重み構造を反映した学習・評価の導入
+2. **Time-series CV** — 単一の Val 期間 (d_1886-1913) ではなく、複数ウィンドウで汎化性能を検証
+3. **NON_FOODS の残差学習** — 間欠需要のリスクを慎重に評価した上で適用
+4. **再提出** — 改善後に Public Score の変化を確認
