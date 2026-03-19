@@ -669,9 +669,92 @@ roll_mean_56 依存を打破するため、価格因子を3つの観点から深
 
 ---
 
+## 2026-03-19: v7 結果 — Step D ハイパラ正則化 + days_since_snap 復活
+
+### 26. Kaggle Score: Private 大幅改善
+
+| | v6 | **v7 (正則化)** | 改善 |
+|---|---|---|---|
+| Val RMSE | 2.1106 | 2.1256 | +0.0150 悪化 |
+| Public (WRMSSE) | 0.730 | 0.736 | +0.006 微悪化 |
+| **Private (WRMSSE)** | **0.981** | **0.842** | **-0.139 大幅改善** |
+| **Gap (Private - Public)** | 0.251 | **0.106** | **ギャップ半減以下** |
+
+### 27. Step D 実装内容
+- `num_leaves`: 127 → 63 (両モデル)
+- `min_child_samples`: 20 → 50 (両モデル)
+- `feature_fraction`: 0.8 → 0.7 (FOODS のみ)
+- `days_since_snap`: FOODS モデルに復活 (v5 で削除していたが、Type-S 店舗で -27.7% の減衰が確認されたため)
+
+### 28. Feature Importance (v7)
+
+**FOODS Top 10 (残差学習 + 正則化):**
+| Rank | Feature | Importance | v6比 |
+|---|---|---|---|
+| 1 | month | 4.51e+07 | #1 維持 |
+| 2 | roll_mean_28 | 4.25e+07 | #2 維持 |
+| 3 | zeros_last_28 | 3.46e+07 | #3 維持 |
+| 4 | sell_price | 3.29e+07 | #4 維持 |
+| 5 | **ewma_28** | 3.20e+07 | 圏外 → **#5 復帰** |
+| 6 | lag_28 | 2.68e+07 | #5 → #6 |
+| 7 | value_gap | 2.46e+07 | #7 維持 |
+| 8 | discount_ratio | 2.42e+07 | #6 → #8 |
+| 9 | price_rolling_mean_56 | 2.34e+07 | #12 → **#9** |
+| 10 | roll_median_7 | 2.26e+07 | #9 → #10 |
+
+**NON_FOODS Top 10:**
+| Rank | Feature | Importance |
+|---|---|---|
+| 1 | ewma_28 | 1.38e+08 |
+| 2 | roll_mean_28 | 1.98e+07 |
+| 3 | roll_std_28 | 2.43e+06 |
+| 4 | month | 2.19e+06 |
+| 5 | value_gap | 2.01e+06 |
+| 6 | discount_ratio | 1.98e+06 |
+| 7 | sell_price | 1.87e+06 |
+| 8 | days_since_last_sale | 1.78e+06 |
+| 9 | wday | 1.39e+06 |
+| 10 | ewma_7 | 1.32e+06 |
+
+### 29. 分析
+
+- **ハイパラ正則化は汎化に極めて有効**: Val RMSE は +0.015 悪化したが、Private は -0.139 の大幅改善。過適合抑制が正しく機能
+- **ewma_28 が FOODS #5 に復帰**: 正則化で tree が浅くなり、ewma_28 を「手っ取り早い shortcut」として再利用。ただし独裁ではない (5.7e7→3.2e7, 均等化は維持)
+- **NON_FOODS は改善余地が大きい**: ewma_28 が依然 70倍独裁。残差学習の適用が次の最大施策
+
+### 30. Step 13: 家計セグメンテーション EDA 結果
+
+#### SNAP 減衰分析 (Type-S vs Type-B-low)
+SNAP 日を基準にした売上減衰を Type-S (SNAP依存: WI_2, WI_3, CA_3) と Type-B-low (自立型: CA_2, CA_4) で比較:
+
+| カテゴリ | Type-S 最大減衰 | Type-B-low 最大減衰 | 差分 |
+|---|---|---|---|
+| **FOODS** | **-27.7%** (day 15) | -12.4% (day 15) | **2.2倍** |
+| HOBBIES | -23.9% (day 1のみ) → 以降 -3〜6% | -7.6% | SNAP 無関係 |
+| HOUSEHOLD | -21.6% (day 1のみ) → 以降 -4〜8% | -10.9% | SNAP ほぼ無関係 |
+
+**核心的発見:**
+- **FOODS はSNAP後ずっと -20〜27% で沈み続ける** → `days_since_snap` が極めて有効
+- **HOBBIES/HOUSEHOLD は day 2 で即回復** → SNAP サイクルは無関係
+- **HOBBIES/HOUSEHOLD は day 18-20 で +47〜55% に跳ねる** → 次の SNAP 前の先行購買
+- `days_since_snap` の FOODS 復活は正しかった (v7 で実施済み)
+
+#### HOUSEHOLD 所得 proxy (Budget/Premium 比率)
+| Store | Budget% | Premium% | B/P比 | snap_lift |
+|---|---|---|---|---|
+| WI_2 | 55.6% | 17.9% | 3.11 | 1.329 (最低所得) |
+| CA_4 | 44.3% | 24.5% | 1.80 | 1.047 (最高所得) |
+
+- Budget/Premium 比率 × SNAP lift: **r = 0.70**
+- SNAP lift だけでは捉えきれない所得の別側面を B/P 比が補完
+
+---
+
 ## Next Steps
 
-1. **WRMSSE 対応** — tweedie/regression ではなく、WRMSSE の重み構造を反映した学習・評価の導入
-2. **Time-series CV** — 単一の Val 期間 (d_1886-1913) ではなく、複数ウィンドウで汎化性能を検証
-3. **NON_FOODS の残差学習** — 間欠需要のリスクを慎重に評価した上で適用
-4. **再提出** — 改善後に Public Score の変化を確認
+1. **Phase 2: 特徴量追加** (parquet 再生成が必要)
+   - `relative_trend_28_56` = roll_mean_28 / (roll_mean_56 + 1e-8) — トレンド方向の1値表現
+   - `store_bp_ratio` — HOUSEHOLD 必需品の Budget/Premium 比率 (所得の第2軸)
+   - `days_since_payday` — 全セグメントで -5〜12% の減衰が確認済み
+2. **NON_FOODS 残差学習** — ewma_28 独裁を打破する最大の未実施施策
+3. **WRMSSE sample_weight** — Kaggle 指標に直接最適化
