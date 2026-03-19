@@ -750,11 +750,68 @@ SNAP 日を基準にした売上減衰を Type-S (SNAP依存: WI_2, WI_3, CA_3) 
 
 ---
 
+## 2026-03-19: Payday Deep Dive EDA
+
+### 31. SNAP 減衰の FOODS vs NON_FOODS 差異 (Type-S 店舗)
+- **FOODS**: SNAP 後 -20〜27% で沈み続ける。day 15 で最大 -27.7%
+- **HOBBIES/HOUSEHOLD**: day 2 で即回復 (-3〜8%)。day 18-20 で +47〜55% (次の SNAP 前の先行購買)
+- **結論**: `days_since_snap` は FOODS にのみ有効。NON_FOODS には不要
+
+### 32. Payday 減衰: dept 別 (平日のみ、週末効果排除)
+| dept | Payroll店 | SNAP店 | Independent店 |
+|---|---|---|---|
+| HOBBIES_1 (おもちゃ) | -11.2% | **-15.0%** | -8.3% |
+| HOBBIES_2 (スポーツ) | -3.1% | +2.0% | +2.4% |
+| HOUSEHOLD_1 (洗剤等) | -10.8% | **-17.5%** | -9.5% |
+| HOUSEHOLD_2 (調理器具) | -8.0% | -9.6% | -5.7% |
+
+- **HOBBIES_1 と HOUSEHOLD_1 が Salary に強く反応。HOBBIES_2 は無反応**
+- **SNAP 店が最大の減衰** — 低所得ほど給料日サイクルに支配される
+
+### 33. FOODS 価格帯別 Salary 感度
+| 価格帯 | 全体減衰 | Payroll店 | Independent店 |
+|---|---|---|---|
+| $0-1 | -11.9% | -18.0% | -6.2% |
+| $10+ | **-18.1%** | **-26.7%** | **-13.5%** |
+
+- **$10+ が最大**: 高級食材は全 store_type で最も Salary に敏感
+- Independent 店でも -13.5% — 高所得でも高級食材は給料日を意識
+
+### 34. 給料日後の週末プレミアム → negligible
+- Cohen's d = 0.014 (HOBBIES), 0.022 (HOUSEHOLD) → **効果量ゼロ**
+- `payday_weekend_window` フラグは不要
+
+---
+
+## 2026-03-19: Phase 2 実装 (v8, Colab 実行待ち)
+
+### 35. Phase 1 追加特徴量
+| 特徴量 | 定義 | 根拠 |
+|---|---|---|
+| `relative_trend_28_56` | roll_mean_28 / (roll_mean_56 + 1e-8) | トレンド方向の1値表現 |
+| `days_since_payday` | 1日/15日からの最短距離 (0-14) | 全セグメントで -5〜18% 減衰 |
+
+### 36. Phase 1.5 追加特徴量
+| 特徴量 | 定義 | 粒度 | 根拠 |
+|---|---|---|---|
+| `store_bp_ratio` | HOUSEHOLD 必需品 Budget/Premium 売上比率 | 10値 | 所得 proxy (r=0.70) |
+| `item_payday_sensitivity` | item 別 payday日平均 / 非payday日平均 | ~3,049値 | HOBBIES_2(+2%) vs HOUSEHOLD_1(-17.5%) を弁別 |
+| `store_payday_decay` | store 別 near-payday avg / far-payday avg | 10値 | Payroll店(-27%) vs Independent店(-13%) |
+| `dept_payday_sensitivity` | dept 別 payday lift | 7値 | HOBBIES_1(-11%) vs HOBBIES_2(-3%) |
+
+### 37. GPU 変更
+- **NON_FOODS**: `residual_target: True`, objective `tweedie` → `regression`
+- 両モデルとも残差学習 (target = sales - roll_mean_28)
+
+### 38. 実行手順
+1. parquet 削除セル実行 (pipeline_cpu.ipynb cell 3)
+2. Phase 1 → 1.5 → 2 (parquet 再生成)
+3. GPU 学習 → 評価 → Kaggle 提出
+
+---
+
 ## Next Steps
 
-1. **Phase 2: 特徴量追加** (parquet 再生成が必要)
-   - `relative_trend_28_56` = roll_mean_28 / (roll_mean_56 + 1e-8) — トレンド方向の1値表現
-   - `store_bp_ratio` — HOUSEHOLD 必需品の Budget/Premium 比率 (所得の第2軸)
-   - `days_since_payday` — 全セグメントで -5〜12% の減衰が確認済み
-2. **NON_FOODS 残差学習** — ewma_28 独裁を打破する最大の未実施施策
-3. **WRMSSE sample_weight** — Kaggle 指標に直接最適化
+1. **v8 の Colab 実行** — Phase 2 全体の効果測定
+2. **Val RMSE + Kaggle Public/Private の比較** — 正則化 (v7) + 新特徴量の効果切り分け
+3. **WRMSSE sample_weight** — Kaggle 指標に直接最適化 (Private 改善の次の施策)
