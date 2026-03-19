@@ -1232,9 +1232,9 @@ def phase1_5_target_encoding() -> None:
             rg['value_gap'].values * _elas * _is_volatile
         ).astype('float32')
 
-        # deal_intensity: max(0, -value_gap) * |elasticity| * snap_active * (volatile only)
+        # deal_intensity: max(0, -value_gap) * |elasticity| (regardless of SNAP for general sensitivity)
         rg['deal_intensity'] = (
-            np.maximum(0, -rg['value_gap'].values) * np.abs(_elas) * _snap_v * _is_volatile
+            np.maximum(0, -rg['value_gap'].values) * np.abs(_elas)
         ).astype('float32')
 
         # above_price_wall: 1 if sell_price > category threshold
