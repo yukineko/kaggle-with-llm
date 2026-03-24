@@ -15,6 +15,8 @@
 | v4 | 2026-03-18 | Decision Edition: +2列, FOODS -3列, NON_FOODS -6列 | 2.1327 | SNAP切断 + 低寄与削除 |
 | v5 | 2026-03-19 | SNAP大幅削減: FOODS -14列, NON_FOODS -19列 | **2.1263** | SNAP 13→2 (FOODS) / 0 (NF) |
 | v6 | 2026-03-19 | Step C: FOODS残差学習 (target=sales-roll_mean_28) | **2.1106** | ewma_28独裁崩壊、value_gap #7, sell_price #4 |
+| v7 | 2026-03-19 | Step D: ハイパラ正則化 (leaves=63, min_child=50) | 2.1256 | **Pub 0.736, Prv 0.842** Gap半減 |
+| v8 | 2026-03-24 | Phase 2: +6列 (trend/payday/bp_ratio/sensitivity) + NON_FOODS残差学習 | 2.1165 | **Pub 0.723, Prv 0.755** Gap=0.032 |
 
 ---
 
