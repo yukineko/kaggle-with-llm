@@ -903,6 +903,108 @@ SNAP 日を基準にした売上減衰を Type-S (SNAP依存: WI_2, WI_3, CA_3) 
 - **復活させた列:** Store profile, Interaction, Store×Cat/Dept 関連の全列。
 - **意図:** 「誰が・いつ・何を」の文脈を維持しつつ、明らかに不要なノイズ列のみを排除する。
 
-### 45. 実行状況
-- `pipeline_gpu.ipynb` の `MODEL_GROUPS` を上記設定に更新済み。
-- 学習実行中。
+### 45. v9c/v9d 結果: v8 より悪化
+| | v8 | v9c (22/27 drops) | v9d (21/26, roll_mean_56復帰) |
+|---|---|---|---|
+| Public | **0.723** | 0.768 | 0.769 |
+| Private | **0.755** | 0.833 | 0.839 |
+
+**教訓: feature_fraction=0.7 が暗黙の正則化を担っている。** 低 importance の特徴量も tree のバリエーション生成に寄与しており、手動削除はアンサンブルの多様性を壊す。v8 の 15/20 drops が最適水準。**これ以上の削減は行わない。**
+
+---
+
+## 2026-03-25: v10 結果 — item_snap_sensitivity + item_month_index
+
+### 46. v10 実装内容
+
+#### Phase 1.5 新特徴量
+| 特徴量 | Pass | 定義 | 粒度 |
+|---|---|---|---|
+| `item_snap_sensitivity` | 0f | FOODS item 別 SNAP 日平均/非SNAP 日平均 | ~1,400値 |
+| `item_month_index` | 0g | item × month の季節性指数 (月別avg/年間avg) | ~36,000値 |
+
+#### EDA 知見 (新規分析)
+- **FOODS_2 は 98% が SNAP 感応** (冷凍食品・肉 = プチ贅沢 + 備蓄)
+- **FOODS_1 は 40% が SNAP 中立** (飲料 = 日常ルーチン)
+- **SNAP と Salary の相関: r = 0.41** — 異なる情報を持つ
+- **SNAP-Pay+ (Salary のみ反応): 78 items (5.5%)** — FOODS_1 の 18% が該当
+- **季節性が最も強い: HOBBIES_2** (CV=0.171, 10月+12月にスパイク)
+- **季節性が最もフラット: HOBBIES_1** (CV=0.032)
+
+#### GPU 変更
+- drop_features: **v8 に復帰** (FOODS 14, NON_FOODS 19)
+- NON_FOODS: **50% サンプリング** (CPU メモリ制約対策)
+- NON_FOODS: rounds 2500 → 1500
+
+#### インフラ改善
+- Phase 1.5 Pass 統合: 8回 → 5回スキャン
+- FOODS/NON_FOODS 学習を別セルに分離 (OOM 対策)
+- models dict + pkl バックアップ方式
+
+### 47. Kaggle Score: **過去最高を更新**
+
+| | v8 (前ベスト) | **v10** | 改善 |
+|---|---|---|---|
+| Val RMSE | 2.1165 | 2.1213 | +0.005 |
+| Public (WRMSSE) | 0.723 | **0.724** | ±0 (同等) |
+| **Private (WRMSSE)** | 0.755 | **0.750** | **-0.005 改善** |
+| **Gap** | 0.032 | **0.026** | さらに縮小 |
+
+### 48. Feature Importance (v10)
+
+**FOODS Top 10:**
+| Rank | Feature | Importance | v8比 |
+|---|---|---|---|
+| 1 | month | 3.80e+07 | #1 維持 |
+| 2 | roll_mean_28 | 3.75e+07 | #3 → #2 |
+| 3 | relative_trend_28_56 | 3.54e+07 | #2 → #3 |
+| 4 | roll_mean_56 | 3.03e+07 | — |
+| 5 | lag_28 | 2.65e+07 | #4 維持 |
+| 6 | zeros_last_28 | 2.50e+07 | #5 → #6 |
+| 7 | sell_price | 2.50e+07 | — |
+| 8 | value_gap | 2.31e+07 | #7 → #8 |
+| 9 | roll_median_7 | 2.01e+07 | #10 → #9 |
+| 10 | discount_ratio | 1.91e+07 | #8 → #10 |
+
+**NON_FOODS Top 10:**
+| Rank | Feature | Importance | v8比 |
+|---|---|---|---|
+| 1 | roll_mean_28 | 2.34e+06 | #1 維持 |
+| 2 | relative_trend_28_56 | 2.19e+06 | #2 維持 |
+| 3 | zeros_last_28 | 1.63e+06 | #3 維持 |
+| 4 | roll_mean_7 | 1.45e+06 | #4 維持 |
+| 5 | lag_56 | 1.24e+06 | #8 → #5 |
+| 6 | wday | 1.19e+06 | #7 → #6 |
+| 7 | month | 1.08e+06 | #5 → #7 |
+| 8 | lag_28 | 0.97e+06 | #6 → #8 |
+| 9 | roll_median_7 | 0.84e+06 | — |
+| 10 | lag_35 | 0.73e+06 | — |
+
+### 49. 分析
+
+- **Private 0.750 — 過去最高。** Val RMSE は v8 より +0.005 高いが、Private は -0.005 改善。汎化性能が向上
+- **Gap 0.026 — 過学習がほぼ解消。** v6 の 0.251 → v10 の 0.026 (10分の1以下)
+- **item_snap_sensitivity / item_month_index は Top 10 外** だが、parquet にタプルカラム名バグがあった。修正済みなので次回再生成後に正しく機能する見込み
+- **NON_FOODS 50% サンプリング + rounds 1500 の制約下** でこの結果。GPU 枠復活後にフルデータで改善余地あり
+- **feature pruning は v8 レベルが最適。** これ以上の削減は多様性を壊す
+
+### 50. 累計スコア推移
+
+| Version | Val RMSE | Public | Private | Gap | 主要変更 |
+|---|---|---|---|---|---|
+| v1 (baseline) | 2.1357 | — | — | — | 3モデル, 48列 |
+| v5 (pruning) | 2.1263 | — | — | — | SNAP 13→2 (FOODS)/0 (NF) |
+| v6 (残差FOODS) | 2.1106 | 0.730 | 0.981 | 0.251 | FOODS 残差学習 |
+| v7 (正則化) | 2.1256 | 0.736 | 0.842 | 0.106 | num_leaves 63, min_child 50 |
+| v8 (Phase 2) | 2.1165 | 0.723 | 0.755 | 0.032 | NON_FOODS 残差学習 + 家計特徴量 |
+| v9b (大量削減) | 2.1247 | 0.767 | 0.830 | 0.063 | 40/44 drops → 失敗 |
+| **v10 (snap+season)** | 2.1213 | **0.724** | **0.750** | **0.026** | item_snap_sensitivity + item_month_index |
+
+---
+
+## Next Steps
+
+1. **parquet 再生成** — item_snap_sensitivity / item_month_index のタプルカラムバグ修正済み。次回 Colab で Phase 1.5 から再実行すれば正しいカラムで生成される
+2. **GPU 枠復活後にフルデータ学習** — NON_FOODS の 50% サンプリングを解除し、rounds を 1500→2500 に戻す
+3. **Multi-seed ensemble** — seed=42,123,456 の3モデル平均で安定性向上 (Tier 1-C)
+4. **WRMSSE sample_weight** — 前回は weight が極端すぎて失敗。`sqrt(sell_price × roll_mean_28)` 等の穏やかな重みで再試行
