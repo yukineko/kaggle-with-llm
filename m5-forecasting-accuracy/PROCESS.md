@@ -887,8 +887,22 @@ SNAP 日を基準にした売上減衰を Type-S (SNAP依存: WI_2, WI_3, CA_3) 
 
 ---
 
-## Next Steps
+## 2026-03-24: v9b 失敗と v8+α (v9c) への再試行
 
-1. **v8 の Colab 実行** — Phase 2 全体の効果測定
-2. **Val RMSE + Kaggle Public/Private の比較** — 正則化 (v7) + 新特徴量の効果切り分け
-3. **WRMSSE sample_weight** — Kaggle 指標に直接最適化 (Private 改善の次の施策)
+### 43. v9b (40/44 drops) の失敗分析
+- **結果:** Public 0.767 / Private 0.830 (v8 より大幅悪化)
+- **原因:** 特徴量の削減しすぎ。特に **Store profile (8列)**, **Interaction (6列)**, **Store×Cat/Dept (4列)** を一括削除したことで、店舗の性格（所得分布や需要構造）をモデルが判別できなくなった。
+- **教訓:** 個別の importance が低くても、それらが集合的に「文脈（誰が・いつ・何を）」を提供している場合、一括削除は危険。
+
+### 44. v9c 戦略: v8 (15/20 drops) + 安全な7列のみ追加削除
+- **FOODS:** v8 (15) + 7 safe = **22 drops**
+- **NON_FOODS:** v8 (20) + 7 safe = **27 drops**
+- **追加削除した7列:**
+    - `year`, `event_name_2`, `event_type_2`, `is_month_start`, `payday_weekend` (Calendar系)
+    - `deal_intensity`, `above_price_wall` (低寄与確定)
+- **復活させた列:** Store profile, Interaction, Store×Cat/Dept 関連の全列。
+- **意図:** 「誰が・いつ・何を」の文脈を維持しつつ、明らかに不要なノイズ列のみを排除する。
+
+### 45. 実行状況
+- `pipeline_gpu.ipynb` の `MODEL_GROUPS` を上記設定に更新済み。
+- 学習実行中。
