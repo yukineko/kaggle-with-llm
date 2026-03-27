@@ -1085,9 +1085,43 @@ FOODS_2 が最も高価格。低所得は安い肉 (ひき肉)、高所得はス
 
 ---
 
+## v13: 低寄与特徴量の整理 (2026-03-27)
+
+### 変更内容
+- `above_price_wall` と `deal_intensity` を FOODS / NON_FOODS 両モデルの `drop_features` に追加
+- 対象: `pipeline_gpu.ipynb` Cell 6 (gpu_006) + Cell 7 (gpu_006b) — 本体と復元ブロック両方を同期
+
+### 根拠 (Step 12d 新特徴量の重要度分析)
+
+| 特徴量 | FOODS (順位) | NON_FOODS (順位) | 判定 |
+|--------|-------------|-----------------|------|
+| value_gap | 11位 | 5位 | 大当り — 残す |
+| price_rolling_mean_56 | 16位 | 15位 | 優秀 — 残す |
+| value_gap_x_elasticity | 22位 | 20位 | 良好 — 残す |
+| price_rank_in_dept | 28位 | 17位 | 良好 — 残す |
+| deal_intensity | 43位 | 52位 | 微妙 — **drop** |
+| above_price_wall | 62位 | 54位 | 不要 — **drop** |
+
+### 期待効果
+- FOODS: feature_fraction=0.7 で低寄与特徴量がサンプリングされる確率を排除
+- NON_FOODS: 20→20 drop (2特徴量追加で次元削減)
+- 学習の高速化・汎化改善
+
+### v12 ベースライン RMSE
+- FOODS: 2.5696 / HOBBIES: 1.4477 / HOUSEHOLD: 1.8090 / Overall: 2.1257
+
+### v13 RMSE → (Colab学習後に記入)
+
+### 構造分析メモ
+- **FOODS**: バランス型。item_month_index, roll_mean_28, lag_28, zeros_last_28 が上位 — 間欠需要・在庫切れの信号が強い
+- **NON_FOODS**: ewma_28 一極集中型 (2位の6倍の重要度)。価格・カレンダー要因が効きにくい
+
+---
+
 ## Next Steps
 
-1. **parquet 再生成** — item_snap_sensitivity / item_month_index のタプルカラムバグ修正済み。次回 Colab で Phase 1.5 から再実行すれば正しいカラムで生成される
-2. **GPU 枠復活後にフルデータ学習** — NON_FOODS の 50% サンプリングを解除し、rounds を 1500→2500 に戻す
-3. **Multi-seed ensemble** — チューニング完了後に実施 (seed=42,123,456 の3モデル平均)
-4. **所得別 item_month_index の検討** — FOODS_1 で「低所得=冬型、高所得=夏型」が確認された。item × income_type × month の 3軸 index が有効な可能性
+1. **間欠需要系特徴量** — zero_to_nonzero_transition, sale_burst_after_zero, item_zero_volatility (FOODS RMSE 改善狙い)
+2. **価格系深掘り** — price_zscore_in_dept (price_rank_in_dept の連続値版), cross_price_effect (カニバリ)
+3. **NON_FOODS EWMA依存解消** — ewma_28_residual の特徴量化
+4. **Multi-seed ensemble** — チューニング完了後に実施 (seed=42,123,456 の3モデル平均)
+5. **所得別 item_month_index の検討** — FOODS_1 で「低所得=冬型、高所得=夏型」が確認された
